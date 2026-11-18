@@ -1,0 +1,6 @@
+{
+  "name": "KNOT & LOOM — Socks Storefront & CMS",
+  "description": "Direct-to-consumer combed-cotton socks e-commerce storefront in BDT with custom pack builder, COD and bKash/Nagad checkout, and integrated CMS admin dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
