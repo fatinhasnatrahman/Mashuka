@@ -4,14 +4,66 @@ import type {
   CartItem,
   CmsPage,
   CmsSettings,
+  NavMenu,
   PackSelection,
   Product,
   ProductReview,
   ProductVariant,
+  PublicPlugin,
   SeoRedirect,
 } from './types.ts';
+import { isSafeInternalPath } from './utils/format.ts';
 import { StorefrontView } from './components/StorefrontView.tsx';
 import { AdminDashboard } from './components/AdminDashboard.tsx';
+
+function reconcileCartWithCatalog(prevCart: CartItem[], activeProducts: Product[]): CartItem[] {
+  const variantMap = new Map<number, { product: Product; variant: ProductVariant }>();
+  for (const product of activeProducts) {
+    for (const variant of product.variants) {
+      variantMap.set(variant.id, { product, variant });
+    }
+  }
+
+  return prevCart
+    .map((item): CartItem | null => {
+      if (item.type === 'single') {
+        if (!item.variant_id) return null;
+        const found = variantMap.get(item.variant_id);
+        if (!found || found.variant.stock <= 0) return null;
+        const unitPrice = found.variant.price_override ?? found.product.price;
+        return {
+          ...item,
+          name: found.product.name,
+          unit_price: unitPrice,
+          compare_at_price: found.product.compare_at_price,
+          max_stock: found.variant.stock,
+          quantity: Math.min(item.quantity, found.variant.stock),
+        };
+      }
+
+      const packItems = item.pack_items || [];
+      if (packItems.length === 0) return null;
+      const counts = new Map<number, number>();
+      for (const sel of packItems) {
+        counts.set(sel.variant_id, (counts.get(sel.variant_id) ?? 0) + 1);
+      }
+      let maxPackStock = Infinity;
+      for (const [vid, neededPerPack] of counts.entries()) {
+        const found = variantMap.get(vid);
+        if (!found || found.variant.stock < neededPerPack) {
+          return null;
+        }
+        maxPackStock = Math.min(maxPackStock, Math.floor(found.variant.stock / neededPerPack));
+      }
+      if (!Number.isFinite(maxPackStock) || maxPackStock <= 0) return null;
+      return {
+        ...item,
+        max_stock: maxPackStock,
+        quantity: Math.min(item.quantity, maxPackStock),
+      };
+    })
+    .filter((item): item is CartItem => item !== null);
+}
 
 export default function App() {
   const [currentPath, setCurrentPath] = useState<string>(() => window.location.pathname || '/');
@@ -19,6 +71,8 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [pages, setPages] = useState<CmsPage[]>([]);
   const [posts, setPosts] = useState<BlogPost[]>([]);
+  const [menus, setMenus] = useState<NavMenu[]>([]);
+  const [plugins, setPlugins] = useState<PublicPlugin[]>([]);
   const [reviews, setReviews] = useState<ProductReview[]>([]);
   const [redirects, setRedirects] = useState<SeoRedirect[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,7 +110,7 @@ export default function App() {
         const match = activeRedirects.find(
           (r) => (r.from_path.replace(/\/+$/, '') || '/') === clean
         );
-        if (!match) break;
+        if (!match || !isSafeInternalPath(match.to_path)) break;
         current = match.to_path.startsWith('/') ? match.to_path : `/${match.to_path}`;
       }
       return current;
@@ -65,6 +119,7 @@ export default function App() {
   );
 
   const navigate = (targetPath: string) => {
+    if (!isSafeInternalPath(targetPath)) return;
     const resolved = resolveRedirectPath(targetPath);
     if (window.location.pathname !== resolved) {
       window.history.pushState({}, '', resolved);
@@ -78,11 +133,15 @@ export default function App() {
       const res = await fetch('/api/storefront');
       if (!res.ok) throw new Error('Failed to load storefront data.');
       const data = await res.json();
+      const loadedProducts: Product[] = data.products || [];
       setCms(data.cms);
-      setProducts(data.products);
+      setProducts(loadedProducts);
       setPages(data.pages || []);
       setPosts(data.posts || []);
+      setMenus(data.menus || []);
+      setPlugins(data.plugins || []);
       setReviews(data.reviews || []);
+      setCart((prev) => reconcileCartWithCatalog(prev, loadedProducts));
       const nextRedirects: SeoRedirect[] = data.redirects || [];
       setRedirects(nextRedirects);
       const initialResolved = resolveRedirectPath(window.location.pathname || '/', nextRedirects);
@@ -114,7 +173,12 @@ export default function App() {
       if (existing) {
         return prev.map((i) =>
           i.cart_key === key
-            ? { ...i, unit_price: unitPrice, quantity: Math.min(variant.stock, i.quantity + quantity) }
+            ? {
+                ...i,
+                unit_price: unitPrice,
+                max_stock: variant.stock,
+                quantity: Math.min(variant.stock, i.quantity + quantity),
+              }
             : i
         );
       }
@@ -143,6 +207,19 @@ export default function App() {
     discountedPrice: number,
     rawPrice: number
   ) => {
+    const counts = new Map<number, number>();
+    for (const sel of selections) {
+      counts.set(sel.variant_id, (counts.get(sel.variant_id) ?? 0) + 1);
+    }
+    let maxPackStock = Infinity;
+    for (const [vid, needed] of counts.entries()) {
+      const variant = products.flatMap((p) => p.variants).find((v) => v.id === vid);
+      if (variant) {
+        maxPackStock = Math.min(maxPackStock, Math.floor(variant.stock / needed));
+      }
+    }
+    const safeMaxStock = Number.isFinite(maxPackStock) && maxPackStock > 0 ? maxPackStock : 1;
+
     const key = `pack_${tier}_${Date.now()}`;
     setCart((prev) => [
       ...prev,
@@ -156,7 +233,7 @@ export default function App() {
         unit_price: discountedPrice,
         compare_at_price: rawPrice,
         quantity: 1,
-        max_stock: 10,
+        max_stock: safeMaxStock,
         pack_tier: tier,
         pack_items: selections,
       },
@@ -221,6 +298,8 @@ export default function App() {
       products={products}
       pages={pages}
       posts={posts}
+      menus={menus}
+      plugins={plugins}
       reviews={reviews}
       cart={cart}
       onNavigate={navigate}

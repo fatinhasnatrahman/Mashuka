@@ -254,12 +254,19 @@ export function UsersRbacView({ ctx }: { ctx: AdminContextHelpers }) {
               <button
                 type="button"
                 onClick={async () => {
-                  await fetch(`/api/admin/users/${u.id}`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                    body: JSON.stringify({ status: u.status === 'active' ? 'invited' : 'active' }),
-                  });
-                  await reload();
+                  try {
+                    const res = await fetch(`/api/admin/users/${u.id}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                      body: JSON.stringify({ status: u.status === 'active' ? 'invited' : 'active' }),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(json.error || 'Failed to update user status');
+                    toast(`Updated ${u.name} status.`);
+                    await reload();
+                  } catch (err) {
+                    toast(err instanceof Error ? err.message : 'Status update failed', 'error');
+                  }
                 }}
                 className={`px-2 py-0.5 rounded text-[11px] font-semibold capitalize ${
                   u.status === 'active'
@@ -697,6 +704,9 @@ export function GeneralSettingsView({ ctx }: { ctx: AdminContextHelpers }) {
             <Mail className="w-4 h-4 text-[#2563EB]" />
             <span>SMTP &amp; Notification Templates</span>
           </div>
+          <p className="text-[11px] text-[#6B7280] dark:text-[#9CA3AF]">
+            Configuration and templates are stored in CMS settings; automated outbound email dispatch requires connecting an active SMTP transport.
+          </p>
           <div className="grid grid-cols-2 gap-3">
             <label className="block space-y-1">
               <span className="font-medium">SMTP Host</span>
@@ -762,6 +772,9 @@ export function GeneralSettingsView({ ctx }: { ctx: AdminContextHelpers }) {
           <Key className="w-4 h-4 text-[#2563EB]" />
           <span>REST API Keys &amp; Courier Webhooks</span>
         </div>
+        <p className="text-[11px] text-[#6B7280] dark:text-[#9CA3AF]">
+          Generated secrets are SHA-256 hashed on the server and ready for external courier or webhook middleware.
+        </p>
 
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex-1 min-w-[180px] space-y-1">
@@ -826,12 +839,18 @@ export function GeneralSettingsView({ ctx }: { ctx: AdminContextHelpers }) {
               <button
                 type="button"
                 onClick={async () => {
-                  await fetch(`/api/admin/api-keys/${k.id}`, {
-                    method: 'DELETE',
-                    headers: authHeaders(),
-                  });
-                  toast('API Key revoked.');
-                  await reload();
+                  try {
+                    const res = await fetch(`/api/admin/api-keys/${k.id}`, {
+                      method: 'DELETE',
+                      headers: authHeaders(),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(json.error || 'Failed to revoke API key');
+                    toast('API Key revoked.');
+                    await reload();
+                  } catch (err) {
+                    toast(err instanceof Error ? err.message : 'Revoke failed', 'error');
+                  }
                 }}
                 className="px-2.5 py-1 rounded border border-[#FECACA] text-[#DC2626] hover:bg-[#FEF2F2] dark:hover:bg-[#2A1519]"
               >

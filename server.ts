@@ -19,6 +19,7 @@ import {
   getCustomersDirectory,
   getMediaLibrary,
   getMenus,
+  getOrCreateSessionSecret,
   getOrders,
   getPlugins,
   getProducts,
@@ -58,21 +59,29 @@ import type {
 initDatabase();
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
-const SESSION_SECRET =
-  process.env.ADMIN_SESSION_SECRET ||
-  crypto.createHash('sha256').update(process.cwd() + '_mashuka_secret').digest('hex');
+const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET?.trim() || getOrCreateSessionSecret();
 
 const UPLOAD_DIR = path.resolve(process.cwd(), 'public', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
+const ALLOWED_UPLOAD_MIME: Record<string, string[]> = {
+  '.jpg': ['image/jpeg', 'image/pjpeg'],
+  '.jpeg': ['image/jpeg', 'image/pjpeg'],
+  '.png': ['image/png'],
+  '.webp': ['image/webp'],
+  '.mp4': ['video/mp4'],
+  '.pdf': ['application/pdf'],
+};
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-    const safeExt = ['.jpg', '.jpeg', '.png', '.webp', '.mp4', '.pdf'].includes(ext) ? ext : '.jpg';
+    const safeExt = Object.prototype.hasOwnProperty.call(ALLOWED_UPLOAD_MIME, ext) ? ext : '.jpg';
     const base = path
       .basename(file.originalname, ext)
       .toLowerCase()
@@ -85,6 +94,15 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowedMimes = ALLOWED_UPLOAD_MIME[ext];
+    if (!allowedMimes || !allowedMimes.includes(file.mimetype.toLowerCase())) {
+      cb(new Error('Unsupported file type. Allowed formats: JPG, PNG, WEBP, MP4, PDF.'));
+      return;
+    }
+    cb(null, true);
+  },
 });
 
 app.use(express.json({ limit: '5mb' }));
@@ -167,6 +185,82 @@ function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFuncti
   next();
 }
 
+function requireRole(...allowed: RbacRole[]) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    const role = req.adminUser?.role;
+    if (!role || !allowed.includes(role)) {
+      res.status(403).json({ error: 'You do not have permission to perform this action.' });
+      return;
+    }
+    next();
+  };
+}
+
+function createRateLimiter(maxRequests: number, windowMs: number) {
+  const hits = new Map<string, number[]>();
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const key = req.ip || 'unknown';
+    const now = Date.now();
+    const recent = (hits.get(key) || []).filter((ts) => now - ts < windowMs);
+    if (recent.length >= maxRequests) {
+      res.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' });
+      return;
+    }
+    recent.push(now);
+    hits.set(key, recent);
+    if (hits.size > 5000) {
+      hits.clear();
+    }
+    next();
+  };
+}
+
+const loginRateLimiter = createRateLimiter(12, 15 * 60 * 1000);
+const trackRateLimiter = createRateLimiter(25, 15 * 60 * 1000);
+
+function isHttpsRequest(req: Request): boolean {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return req.secure || proto === 'https';
+}
+
+function sanitizeInternalPath(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /[\r\n\\]/.test(trimmed)) return null;
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  if (normalized.startsWith('//') || /^\/[a-zA-Z]+:/.test(normalized)) return null;
+  return normalized;
+}
+
+function parsePackDetails(
+  raw: string | null | undefined
+): { labels: string[]; items: Array<{ variant_id: number; qty: number }> } {
+  if (!raw) return { labels: [], items: [] };
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return { labels: parsed.map(String), items: [] };
+    }
+    if (parsed && typeof parsed === 'object') {
+      return {
+        labels: Array.isArray(parsed.labels) ? parsed.labels.map(String) : [],
+        items: Array.isArray(parsed.items)
+          ? parsed.items
+              .filter((x: unknown) => typeof x === 'object' && x !== null)
+              .map((x: { variant_id?: unknown; qty?: unknown }) => ({
+                variant_id: Number(x.variant_id) || 0,
+                qty: Math.max(1, Number(x.qty) || 1),
+              }))
+              .filter((x: { variant_id: number }) => x.variant_id > 0)
+          : [],
+      };
+    }
+  } catch {
+    return { labels: [], items: [] };
+  }
+  return { labels: [], items: [] };
+}
+
 function actorOf(req: AuthenticatedRequest): { name: string; role: string } {
   return {
     name: req.adminUser?.name || 'Admin',
@@ -191,6 +285,9 @@ function computePromoDiscount(
   valid: boolean;
   code: string | null;
   discount_amount: number;
+  discount_type?: 'percent' | 'fixed' | 'free_shipping';
+  discount_value?: number;
+  min_subtotal?: number;
   free_shipping?: boolean;
   message?: string;
 } {
@@ -231,7 +328,15 @@ function computePromoDiscount(
     };
   }
   if (promo.discount_type === 'free_shipping') {
-    return { valid: true, code: promo.code, discount_amount: 0, free_shipping: true };
+    return {
+      valid: true,
+      code: promo.code,
+      discount_amount: 0,
+      discount_type: promo.discount_type,
+      discount_value: promo.discount_value,
+      min_subtotal: promo.min_subtotal,
+      free_shipping: true,
+    };
   }
   const rawDiscount =
     promo.discount_type === 'percent'
@@ -241,22 +346,87 @@ function computePromoDiscount(
     valid: true,
     code: promo.code,
     discount_amount: Math.min(subtotal, Math.max(0, rawDiscount)),
+    discount_type: promo.discount_type,
+    discount_value: promo.discount_value,
+    min_subtotal: promo.min_subtotal,
   };
 }
 
-// ---------- PUBLIC STOREFRONT ROUTES ----------
+// ---------- PUBLIC STOREFRONT & SEO ROUTES ----------
+
+app.get('/robots.txt', (_req, res) => {
+  const cms = getCmsSettings();
+  res.type('text/plain; charset=utf-8').send(cms.robots_txt || 'User-agent: *\nAllow: /\nDisallow: /admin');
+});
+
+app.get('/sitemap.xml', (req, res) => {
+  const cms = getCmsSettings();
+  if (!cms.sitemap_enabled) {
+    res.status(404).type('text/plain').send('Sitemap disabled');
+    return;
+  }
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  const urls: Array<{ loc: string; lastmod?: string }> = [
+    { loc: `${baseUrl}/` },
+    { loc: `${baseUrl}/socks` },
+    { loc: `${baseUrl}/men` },
+    { loc: `${baseUrl}/women` },
+    { loc: `${baseUrl}/kids-baby` },
+    { loc: `${baseUrl}/size-chart` },
+    { loc: `${baseUrl}/journal` },
+  ];
+  for (const p of getProducts(false, false)) {
+    urls.push({ loc: `${baseUrl}/product/${p.slug}`, lastmod: p.created_at });
+  }
+  for (const pg of getCmsPages(false)) {
+    urls.push({ loc: `${baseUrl}/page/${pg.slug}`, lastmod: pg.updated_at });
+  }
+  for (const post of getBlogPosts(false)) {
+    urls.push({ loc: `${baseUrl}/journal/${post.slug}`, lastmod: post.updated_at });
+  }
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
+    .map((u) => `  <url><loc>${u.loc.replace(/&/g, '&amp;')}</loc>${u.lastmod ? `<lastmod>${u.lastmod}</lastmod>` : ''}</url>`)
+    .join('\n')}\n</urlset>`;
+  res.type('application/xml; charset=utf-8').send(xml);
+});
 
 app.get('/api/storefront', (_req, res) => {
+  const fullCms = getCmsSettings();
+  const publicCms = {
+    ...fullCms,
+    smtp_host: '',
+    smtp_from: '',
+    smtp_templates: [],
+  };
+  const publicPluginIds = new Set(['newsletter-popup', 'schema-jsonld', 'bkash-webhook']);
+  const publicPlugins = getPlugins()
+    .filter((pl) => publicPluginIds.has(pl.id))
+    .map((pl) => ({ id: pl.id, is_enabled: pl.is_enabled, config: pl.config }));
+
   res.json({
-    cms: getCmsSettings(),
-    products: getProducts(false),
+    cms: publicCms,
+    products: getProducts(false, false),
     promos: getPromos(false),
     pages: getCmsPages(false),
     posts: getBlogPosts(false),
     menus: getMenus(),
+    plugins: publicPlugins,
     reviews: getReviews(false),
     redirects: getRedirects(),
   });
+});
+
+app.post('/api/posts/:slug/view', (req, res) => {
+  const slug = String(req.params.slug || '').trim();
+  if (!slug) {
+    res.status(400).json({ error: 'Invalid slug.' });
+    return;
+  }
+  db.prepare(
+    `UPDATE blog_posts SET views_count = views_count + 1
+     WHERE slug = ? AND (status = 'published' OR (status = 'scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= ?))`
+  ).run(slug, new Date().toISOString());
+  res.json({ tracked: true });
 });
 
 app.post('/api/promos/validate', (req, res) => {
@@ -270,6 +440,9 @@ app.post('/api/promos/validate', (req, res) => {
   res.json({
     code: result.code,
     discount_amount: result.discount_amount,
+    discount_type: result.discount_type,
+    discount_value: result.discount_value,
+    min_subtotal: result.min_subtotal,
     free_shipping: Boolean(result.free_shipping),
   });
 });
@@ -325,8 +498,15 @@ app.post('/api/orders', (req, res) => {
         .json({ error: `Please enter the sender mobile number used for ${paymentMethod.toUpperCase()}.` });
       return;
     }
-    if (!body.wallet_trx_id || body.wallet_trx_id.trim().length < 4) {
-      res.status(400).json({ error: `Please enter your ${paymentMethod.toUpperCase()} Transaction ID (TrxID).` });
+    const cleanTrx = (body.wallet_trx_id || '').trim().toUpperCase();
+    const bkashPlugin = getPlugins().find((p) => p.id === 'bkash-webhook');
+    const strictTrx = Boolean(bkashPlugin?.is_enabled && bkashPlugin.config?.strict_trx_length);
+    if (strictTrx ? !/^[A-Z0-9]{10}$/.test(cleanTrx) : cleanTrx.length < 4) {
+      res.status(400).json({
+        error: strictTrx
+          ? `Please enter a valid 10-character alphanumeric ${paymentMethod.toUpperCase()} TrxID.`
+          : `Please enter your ${paymentMethod.toUpperCase()} Transaction ID (TrxID).`,
+      });
       return;
     }
   }
@@ -394,6 +574,7 @@ app.post('/api/orders', (req, res) => {
 
           let rawPackSum = 0;
           const detailNames: string[] = [];
+          const perPackVariantQty = new Map<number, number>();
           for (const sel of packSelections) {
             const vRow = getVariantRow.get(sel.variant_id) as VariantJoined | undefined;
             if (!vRow || !vRow.is_active) {
@@ -404,6 +585,7 @@ app.post('/api/orders', (req, res) => {
               throw new Error(`Insufficient stock for ${vRow.product_name} (${vRow.color_name}, ${vRow.size}).`);
             }
             variantStockDecrements.set(vRow.id, pendingCount);
+            perPackVariantQty.set(vRow.id, (perPackVariantQty.get(vRow.id) ?? 0) + 1);
             rawPackSum += vRow.product_price;
             detailNames.push(`${vRow.product_name} (${vRow.color_name} · ${vRow.size})`);
           }
@@ -413,6 +595,11 @@ app.post('/api/orders', (req, res) => {
           const lineTotal = packUnitPrice * qty;
           subtotal += lineTotal;
 
+          const packItemsMeta = Array.from(perPackVariantQty.entries()).map(([variant_id, perPackQty]) => ({
+            variant_id,
+            qty: perPackQty,
+          }));
+
           preparedItems.push({
             product_id: null,
             variant_id: null,
@@ -421,7 +608,7 @@ app.post('/api/orders', (req, res) => {
             quantity: qty,
             unit_price: packUnitPrice,
             line_total: lineTotal,
-            pack_details: JSON.stringify(detailNames),
+            pack_details: JSON.stringify({ labels: detailNames, items: packItemsMeta }),
           });
         } else {
           if (!item.variant_id) {
@@ -478,8 +665,10 @@ app.post('/api/orders', (req, res) => {
         db.prepare(`UPDATE promo_codes SET usage_count = usage_count + 1 WHERE code = ?`).run(promoResult.code);
       }
 
-      const lastRow = db.prepare(`SELECT MAX(id) as maxId FROM orders`).get() as { maxId: number | null };
-      const nextNum = 1001 + (lastRow?.maxId ?? 0);
+      const lastRow = db
+        .prepare(`SELECT MAX(CAST(SUBSTR(order_number, 5) AS INTEGER)) as maxNum FROM orders WHERE order_number LIKE 'MSH-%'`)
+        .get() as { maxNum: number | null };
+      const nextNum = Math.max(1001, (lastRow?.maxNum ?? 1000) + 1);
       const orderNumber = `MSH-${nextNum}`;
       const now = new Date().toISOString();
 
@@ -555,11 +744,11 @@ app.post('/api/orders', (req, res) => {
   }
 });
 
-app.get('/api/orders/track', (req, res) => {
+app.get('/api/orders/track', trackRateLimiter, (req, res) => {
   const orderNumber = String(req.query.orderNumber || '').trim().toUpperCase();
   const phoneDigits = String(req.query.phone || '').replace(/\D/g, '');
-  if (!orderNumber || phoneDigits.length < 6) {
-    res.status(400).json({ error: 'Enter both your Order Number (e.g. MSH-1001) and phone number.' });
+  if (!orderNumber || phoneDigits.length < 10) {
+    res.status(400).json({ error: 'Enter your Order Number (e.g. MSH-1001) and full mobile number.' });
     return;
   }
 
@@ -573,13 +762,38 @@ app.get('/api/orders/track', (req, res) => {
   }
 
   const storedDigits = orderRow.customer_phone.replace(/\D/g, '');
-  if (!storedDigits.endsWith(phoneDigits.slice(-6))) {
+  if (storedDigits.slice(-10) !== phoneDigits.slice(-10)) {
     res.status(403).json({ error: 'Phone number does not match this order.' });
     return;
   }
 
   const items = db.prepare(`SELECT * FROM order_items WHERE order_id = ?`).all(orderRow.id) as Order['items'];
-  res.json({ order: { ...orderRow, items } });
+  res.json({
+    order: {
+      id: orderRow.id,
+      order_number: orderRow.order_number,
+      customer_name: orderRow.customer_name,
+      customer_phone: '',
+      delivery_zone: orderRow.delivery_zone,
+      address: '',
+      city: orderRow.city,
+      notes: null,
+      payment_method: orderRow.payment_method,
+      payment_status: orderRow.payment_status,
+      tracking_number: orderRow.tracking_number,
+      wallet_sender: null,
+      wallet_trx_id: null,
+      subtotal: orderRow.subtotal,
+      promo_code: orderRow.promo_code,
+      discount_amount: orderRow.discount_amount,
+      tax_amount: orderRow.tax_amount,
+      shipping_fee: orderRow.shipping_fee,
+      total: orderRow.total,
+      status: orderRow.status,
+      created_at: orderRow.created_at,
+      items,
+    },
+  });
 });
 
 app.post('/api/reviews', (req, res) => {
@@ -632,8 +846,10 @@ app.post('/api/returns', (req, res) => {
     res.status(400).json({ error: 'Order number, name, phone, and details are required.' });
     return;
   }
-  const last = db.prepare(`SELECT MAX(id) as maxId FROM return_requests`).get() as { maxId: number | null };
-  const reqNum = `RET-${101 + (last?.maxId ?? 0)}`;
+  const last = db
+    .prepare(`SELECT MAX(CAST(SUBSTR(request_number, 5) AS INTEGER)) as maxNum FROM return_requests WHERE request_number LIKE 'RET-%'`)
+    .get() as { maxNum: number | null };
+  const reqNum = `RET-${Math.max(101, (last?.maxNum ?? 100) + 1)}`;
   const safeResolution =
     resolution === 'refund' || resolution === 'store-credit' ? resolution : 'exchange';
 
@@ -691,7 +907,7 @@ app.get('/api/admin/me', (req, res) => {
   res.json({ authenticated: Boolean(user), user });
 });
 
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', loginRateLimiter, (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
   if (!password) {
     res.status(401).json({ error: 'Password is required.' });
@@ -710,9 +926,10 @@ app.post('/api/admin/login', (req, res) => {
     rbac_role: auth.user.role,
     exp: Date.now() + 1000 * 60 * 60 * 24 * 7,
   });
+  const secureFlag = isHttpsRequest(req) ? '; Secure' : '';
   res.setHeader(
     'Set-Cookie',
-    `kl_admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`
+    `kl_admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${secureFlag}`
   );
   res.json({ authenticated: true, token, user: auth.user });
 });
@@ -744,24 +961,32 @@ app.post('/api/admin/change-password', requireAdmin, (req: AuthenticatedRequest,
   res.json({ updated: true });
 });
 
-app.post('/api/admin/logout', (_req, res) => {
-  res.setHeader('Set-Cookie', `kl_admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+app.post('/api/admin/logout', (req, res) => {
+  const secureFlag = isHttpsRequest(req) ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `kl_admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureFlag}`);
   res.json({ authenticated: false });
 });
 
 app.get('/api/admin/dashboard', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const role = req.adminUser!.role;
+  const isSuperAdmin = role === 'Super Admin';
+  const includeCost = role === 'Super Admin' || role === 'Shop Manager';
+
   const orders = getOrders();
-  const products = getProducts(true);
+  const products = getProducts(true, includeCost);
   const promos = getPromos(true);
-  const cms = getCmsSettings();
+  const fullCms = getCmsSettings();
+  const cms = isSuperAdmin
+    ? fullCms
+    : { ...fullCms, smtp_host: '', smtp_from: '', smtp_templates: [] };
   const pages = getCmsPages(true);
   const posts = getBlogPosts(true);
   const menus = getMenus();
   const redirects = getRedirects();
   const plugins = getPlugins();
-  const users = getRbacUsers();
-  const auditLogs = getAuditLogs();
-  const apiKeys = getApiKeys();
+  const users = isSuperAdmin ? getRbacUsers() : [];
+  const auditLogs = isSuperAdmin ? getAuditLogs() : [];
+  const apiKeys = isSuperAdmin ? getApiKeys() : [];
   const customers = getCustomersDirectory();
   const reviews = getReviews(true);
   const returns = getReturnRequests();
@@ -771,15 +996,15 @@ app.get('/api/admin/dashboard', requireAdmin, (req: AuthenticatedRequest, res) =
   const nonCancelledOrders = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'refunded');
   const totalRevenue = nonCancelledOrders.reduce((acc, o) => acc + o.total, 0);
   const aov = nonCancelledOrders.length > 0 ? Math.round(totalRevenue / nonCancelledOrders.length) : 0;
-  const totalPageViews = posts.reduce((acc, p) => acc + p.views_count, 0) + 4820;
+  const totalPageViews = posts.reduce((acc, p) => acc + p.views_count, 0);
 
   const metrics: AdminDashboardMetrics = {
     total_revenue: totalRevenue,
     total_orders_count: orders.length,
     aov,
     total_page_views: totalPageViews,
-    active_subscribers: customers.filter((c) => c.tags.includes('Subscriber')).length + 142,
-    conversion_rate: 3.4,
+    active_subscribers: customers.filter((c) => c.tags.includes('Subscriber')).length,
+    conversion_rate: 0,
     active_orders_count: orders.filter(
       (o) => !['delivered', 'cancelled', 'refunded'].includes(o.status)
     ).length,
@@ -818,48 +1043,64 @@ app.get('/api/admin/dashboard', requireAdmin, (req: AuthenticatedRequest, res) =
   });
 });
 
-app.post('/api/admin/upload', requireAdmin, upload.single('image'), (req: AuthenticatedRequest, res) => {
-  if (!req.file) {
-    res.status(400).json({ error: 'No file provided.' });
-    return;
+app.post(
+  '/api/admin/upload',
+  requireAdmin,
+  requireRole('Super Admin', 'Shop Manager', 'Content Editor', 'Author'),
+  upload.single('image'),
+  (req: AuthenticatedRequest, res) => {
+    if (!req.file) {
+      res.status(400).json({ error: 'No file provided.' });
+      return;
+    }
+    const url = `/uploads/${req.file.filename}`;
+    const ext = path.extname(req.file.filename).toLowerCase();
+    const mediaType = ext === '.mp4' ? 'video' : ext === '.pdf' ? 'document' : 'image';
+    db.prepare(
+      `INSERT OR REPLACE INTO media_metadata (url, title, alt_text, caption, media_type, updated_at) VALUES (?, ?, ?, '', ?, ?)`
+    ).run(url, req.file.originalname, req.file.originalname, mediaType, new Date().toISOString());
+    const actor = actorOf(req);
+    logAudit(actor.name, actor.role, 'media.uploaded', req.file.filename, `Uploaded ${mediaType} asset`);
+    res.json({ url });
   }
-  const url = `/uploads/${req.file.filename}`;
-  const ext = path.extname(req.file.filename).toLowerCase();
-  const mediaType = ext === '.mp4' ? 'video' : ext === '.pdf' ? 'document' : 'image';
-  db.prepare(
-    `INSERT OR REPLACE INTO media_metadata (url, title, alt_text, caption, media_type, updated_at) VALUES (?, ?, ?, '', ?, ?)`
-  ).run(url, req.file.originalname, req.file.originalname, mediaType, new Date().toISOString());
-  const actor = actorOf(req);
-  logAudit(actor.name, actor.role, 'media.uploaded', req.file.filename, `Uploaded ${mediaType} asset`);
-  res.json({ url });
-});
+);
 
-app.patch('/api/admin/media/meta', requireAdmin, (req, res) => {
-  const { url, title, alt_text, caption } = req.body as {
-    url?: string;
-    title?: string;
-    alt_text?: string;
-    caption?: string;
-  };
-  if (!url) {
-    res.status(400).json({ error: 'Media URL is required.' });
-    return;
+app.patch(
+  '/api/admin/media/meta',
+  requireAdmin,
+  requireRole('Super Admin', 'Shop Manager', 'Content Editor', 'Author'),
+  (req, res) => {
+    const { url, title, alt_text, caption } = req.body as {
+      url?: string;
+      title?: string;
+      alt_text?: string;
+      caption?: string;
+    };
+    if (!url) {
+      res.status(400).json({ error: 'Media URL is required.' });
+      return;
+    }
+    db.prepare(
+      `INSERT OR REPLACE INTO media_metadata (url, title, alt_text, caption, media_type, updated_at) VALUES (?, ?, ?, ?, 'image', ?)`
+    ).run(url, title || '', alt_text || '', caption || '', new Date().toISOString());
+    res.json({ updated: true });
   }
-  db.prepare(
-    `INSERT OR REPLACE INTO media_metadata (url, title, alt_text, caption, media_type, updated_at) VALUES (?, ?, ?, ?, 'image', ?)`
-  ).run(url, title || '', alt_text || '', caption || '', new Date().toISOString());
-  res.json({ updated: true });
-});
+);
 
-app.delete('/api/admin/media/:filename', requireAdmin, (req, res) => {
-  const safeName = path.basename(String(req.params.filename || ''));
-  const target = path.join(UPLOAD_DIR, safeName);
-  if (fs.existsSync(target)) {
-    fs.unlinkSync(target);
+app.delete(
+  '/api/admin/media/:filename',
+  requireAdmin,
+  requireRole('Super Admin', 'Shop Manager', 'Content Editor'),
+  (req, res) => {
+    const safeName = path.basename(String(req.params.filename || ''));
+    const target = path.join(UPLOAD_DIR, safeName);
+    if (fs.existsSync(target)) {
+      fs.unlinkSync(target);
+    }
+    db.prepare(`DELETE FROM media_metadata WHERE url = ?`).run(`/uploads/${safeName}`);
+    res.json({ deleted: true });
   }
-  db.prepare(`DELETE FROM media_metadata WHERE url = ?`).run(`/uploads/${safeName}`);
-  res.json({ deleted: true });
-});
+);
 
 // Products CRUD + Inline Stock Adjustment
 interface AdminProductInput {
@@ -902,7 +1143,7 @@ interface AdminProductInput {
   }>;
 }
 
-app.post('/api/admin/products', requireAdmin, (req, res) => {
+app.post('/api/admin/products', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req: AuthenticatedRequest, res) => {
   const input = req.body as AdminProductInput;
   if (!input.name?.trim() || !input.variants?.length) {
     res.status(400).json({ error: 'Product name and at least one variant are required.' });
@@ -994,7 +1235,7 @@ app.post('/api/admin/products', requireAdmin, (req, res) => {
   }
 });
 
-app.put('/api/admin/products/:id', requireAdmin, (req, res) => {
+app.put('/api/admin/products/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req: AuthenticatedRequest, res) => {
   const productId = Number(req.params.id);
   const input = req.body as AdminProductInput;
   const existing = db.prepare(`SELECT id FROM products WHERE id = ?`).get(productId);
@@ -1100,9 +1341,11 @@ app.put('/api/admin/products/:id', requireAdmin, (req, res) => {
       const existingVars = db
         .prepare(`SELECT id FROM product_variants WHERE product_id = ?`)
         .all(productId) as Array<{ id: number }>;
+      const detachOrderVar = db.prepare(`UPDATE order_items SET variant_id = NULL WHERE variant_id = ?`);
       const deleteVar = db.prepare(`DELETE FROM product_variants WHERE id = ?`);
       for (const ev of existingVars) {
         if (!keepIds.includes(ev.id)) {
+          detachOrderVar.run(ev.id);
           deleteVar.run(ev.id);
         }
       }
@@ -1117,7 +1360,7 @@ app.put('/api/admin/products/:id', requireAdmin, (req, res) => {
   }
 });
 
-app.patch('/api/admin/variants/:id/stock', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.patch('/api/admin/variants/:id/stock', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req: AuthenticatedRequest, res) => {
   const variantId = Number(req.params.id);
   const { stock } = req.body as { stock?: number };
   const safeStock = Math.max(0, Math.round(Number(stock) || 0));
@@ -1127,7 +1370,7 @@ app.patch('/api/admin/variants/:id/stock', requireAdmin, (req: AuthenticatedRequ
   res.json({ updated: true, stock: safeStock });
 });
 
-app.post('/api/admin/products/bulk', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.post('/api/admin/products/bulk', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req: AuthenticatedRequest, res) => {
   const { ids, action } = req.body as { ids?: number[]; action?: 'activate' | 'draft' | 'delete' };
   if (!Array.isArray(ids) || ids.length === 0) {
     res.status(400).json({ error: 'Select at least one product.' });
@@ -1135,6 +1378,7 @@ app.post('/api/admin/products/bulk', requireAdmin, (req: AuthenticatedRequest, r
   }
   const placeholders = ids.map(() => '?').join(',');
   if (action === 'delete') {
+    db.prepare(`UPDATE order_items SET product_id = NULL, variant_id = NULL WHERE product_id IN (${placeholders})`).run(...ids);
     db.prepare(`DELETE FROM products WHERE id IN (${placeholders})`).run(...ids);
   } else if (action === 'activate') {
     db.prepare(`UPDATE products SET status = 'active', is_active = 1 WHERE id IN (${placeholders})`).run(...ids);
@@ -1146,8 +1390,9 @@ app.post('/api/admin/products/bulk', requireAdmin, (req: AuthenticatedRequest, r
   res.json({ updated: true });
 });
 
-app.delete('/api/admin/products/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.delete('/api/admin/products/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req: AuthenticatedRequest, res) => {
   const productId = Number(req.params.id);
+  db.prepare(`UPDATE order_items SET product_id = NULL, variant_id = NULL WHERE product_id = ?`).run(productId);
   db.prepare(`DELETE FROM products WHERE id = ?`).run(productId);
   const actor = actorOf(req);
   logAudit(actor.name, actor.role, 'product.deleted', `Product #${productId}`, 'Removed product');
@@ -1155,7 +1400,7 @@ app.delete('/api/admin/products/:id', requireAdmin, (req: AuthenticatedRequest, 
 });
 
 // Blog Posts CRUD & Revisions
-app.post('/api/admin/posts', requireAdmin, (req, res) => {
+app.post('/api/admin/posts', requireAdmin, requireRole('Super Admin', 'Content Editor', 'Author'), (req: AuthenticatedRequest, res) => {
   const input = req.body as {
     title: string;
     slug?: string;
@@ -1183,7 +1428,7 @@ app.post('/api/admin/posts', requireAdmin, (req, res) => {
     {
       id: `rev-${Date.now()}`,
       saved_at: now,
-      author: input.author_name || 'Fatin Hasnat',
+      author: input.author_name || req.adminUser?.name || 'Fatin Hasnat',
       title: input.title.trim(),
       content: input.content || '',
     },
@@ -1204,7 +1449,7 @@ app.post('/api/admin/posts', requireAdmin, (req, res) => {
       input.category || 'Craft & Yarn',
       JSON.stringify(input.tags || []),
       input.featured_image || '/src/assets/images/hero_socks_campaign_1795008499974.jpg',
-      input.author_name || 'Fatin Hasnat',
+      input.author_name || req.adminUser?.name || 'Fatin Hasnat',
       input.status || 'draft',
       input.scheduled_at || null,
       (input.focus_keyword || '').trim(),
@@ -1221,7 +1466,7 @@ app.post('/api/admin/posts', requireAdmin, (req, res) => {
   res.status(201).json({ post: created });
 });
 
-app.put('/api/admin/posts/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.put('/api/admin/posts/:id', requireAdmin, requireRole('Super Admin', 'Content Editor', 'Author'), (req: AuthenticatedRequest, res) => {
   const id = Number(req.params.id);
   const existing = getBlogPosts(true).find((p) => p.id === id);
   if (!existing) {
@@ -1241,36 +1486,40 @@ app.put('/api/admin/posts/:id', requireAdmin, (req: AuthenticatedRequest, res) =
     ...existing.revisions.slice(0, 9),
   ];
 
-  db.prepare(
-    `UPDATE blog_posts SET
-      title = ?, slug = ?, excerpt = ?, content = ?, category = ?, tags = ?, featured_image = ?,
-      author_name = ?, status = ?, scheduled_at = ?, focus_keyword = ?, seo_title = ?, seo_description = ?,
-      revisions = ?, updated_at = ?
-    WHERE id = ?`
-  ).run(
-    (input.title || existing.title).trim(),
-    slugify(input.slug || input.title || existing.slug),
-    input.excerpt ?? existing.excerpt,
-    input.content ?? existing.content,
-    input.category ?? existing.category,
-    JSON.stringify(input.tags ?? existing.tags),
-    input.featured_image ?? existing.featured_image,
-    input.author_name ?? existing.author_name,
-    input.status ?? existing.status,
-    input.scheduled_at ?? existing.scheduled_at,
-    input.focus_keyword ?? existing.focus_keyword,
-    input.seo_title ?? existing.seo_title,
-    input.seo_description ?? existing.seo_description,
-    JSON.stringify(nextRevs),
-    now,
-    id
-  );
-  const actor = actorOf(req);
-  logAudit(actor.name, actor.role, 'post.updated', input.title || existing.title, `Status: ${input.status || existing.status}`);
-  res.json({ post: getBlogPosts(true).find((p) => p.id === id) });
+  try {
+    db.prepare(
+      `UPDATE blog_posts SET
+        title = ?, slug = ?, excerpt = ?, content = ?, category = ?, tags = ?, featured_image = ?,
+        author_name = ?, status = ?, scheduled_at = ?, focus_keyword = ?, seo_title = ?, seo_description = ?,
+        revisions = ?, updated_at = ?
+      WHERE id = ?`
+    ).run(
+      (input.title || existing.title).trim(),
+      slugify(input.slug || input.title || existing.slug),
+      input.excerpt ?? existing.excerpt,
+      input.content ?? existing.content,
+      input.category ?? existing.category,
+      JSON.stringify(input.tags ?? existing.tags),
+      input.featured_image ?? existing.featured_image,
+      input.author_name ?? existing.author_name,
+      input.status ?? existing.status,
+      input.scheduled_at ?? existing.scheduled_at,
+      input.focus_keyword ?? existing.focus_keyword,
+      input.seo_title ?? existing.seo_title,
+      input.seo_description ?? existing.seo_description,
+      JSON.stringify(nextRevs),
+      now,
+      id
+    );
+    const actor = actorOf(req);
+    logAudit(actor.name, actor.role, 'post.updated', input.title || existing.title, `Status: ${input.status || existing.status}`);
+    res.json({ post: getBlogPosts(true).find((p) => p.id === id) });
+  } catch {
+    res.status(400).json({ error: 'Slug already exists on another article.' });
+  }
 });
 
-app.delete('/api/admin/posts/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.delete('/api/admin/posts/:id', requireAdmin, requireRole('Super Admin', 'Content Editor', 'Author'), (req: AuthenticatedRequest, res) => {
   const id = Number(req.params.id);
   db.prepare(`DELETE FROM blog_posts WHERE id = ?`).run(id);
   const actor = actorOf(req);
@@ -1294,7 +1543,7 @@ interface AdminPageInput {
   sort_order: number;
 }
 
-app.post('/api/admin/pages', requireAdmin, (req, res) => {
+app.post('/api/admin/pages', requireAdmin, requireRole('Super Admin', 'Content Editor'), (req: AuthenticatedRequest, res) => {
   const input = req.body as AdminPageInput;
   if (!input.title?.trim()) {
     res.status(400).json({ error: 'Page title is required.' });
@@ -1333,7 +1582,7 @@ app.post('/api/admin/pages', requireAdmin, (req, res) => {
   res.status(201).json({ page: created });
 });
 
-app.put('/api/admin/pages/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.put('/api/admin/pages/:id', requireAdmin, requireRole('Super Admin', 'Content Editor'), (req: AuthenticatedRequest, res) => {
   const id = Number(req.params.id);
   const input = req.body as AdminPageInput;
   if (!input.title?.trim()) {
@@ -1372,7 +1621,7 @@ app.put('/api/admin/pages/:id', requireAdmin, (req: AuthenticatedRequest, res) =
   }
 });
 
-app.delete('/api/admin/pages/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.delete('/api/admin/pages/:id', requireAdmin, requireRole('Super Admin', 'Content Editor'), (req: AuthenticatedRequest, res) => {
   const pageId = Number(req.params.id);
   db.prepare(`DELETE FROM cms_pages WHERE id = ?`).run(pageId);
   const actor = actorOf(req);
@@ -1381,7 +1630,7 @@ app.delete('/api/admin/pages/:id', requireAdmin, (req: AuthenticatedRequest, res
 });
 
 // Menus Builder
-app.put('/api/admin/menus/:location', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.put('/api/admin/menus/:location', requireAdmin, requireRole('Super Admin', 'Content Editor'), (req: AuthenticatedRequest, res) => {
   const location = String(req.params.location);
   if (!['header', 'footer', 'mobile'].includes(location)) {
     res.status(400).json({ error: 'Invalid menu location.' });
@@ -1398,20 +1647,22 @@ app.put('/api/admin/menus/:location', requireAdmin, (req: AuthenticatedRequest, 
 });
 
 // SEO Redirects
-app.post('/api/admin/redirects', requireAdmin, (req, res) => {
+app.post('/api/admin/redirects', requireAdmin, requireRole('Super Admin', 'Content Editor'), (req, res) => {
   const { from_path, to_path, status_code } = req.body as {
     from_path?: string;
     to_path?: string;
     status_code?: 301 | 302;
   };
-  if (!from_path?.trim() || !to_path?.trim()) {
-    res.status(400).json({ error: 'Source and target paths are required.' });
+  const safeFrom = sanitizeInternalPath(from_path);
+  const safeTo = sanitizeInternalPath(to_path);
+  if (!safeFrom || !safeTo) {
+    res.status(400).json({ error: 'Source and target must be valid internal paths starting with /.' });
     return;
   }
   try {
     db.prepare(`INSERT INTO seo_redirects (from_path, to_path, status_code, hits, created_at) VALUES (?, ?, ?, 0, ?)`).run(
-      from_path.trim().startsWith('/') ? from_path.trim() : `/${from_path.trim()}`,
-      to_path.trim(),
+      safeFrom,
+      safeTo,
       status_code === 302 ? 302 : 301,
       new Date().toISOString()
     );
@@ -1421,13 +1672,13 @@ app.post('/api/admin/redirects', requireAdmin, (req, res) => {
   }
 });
 
-app.delete('/api/admin/redirects/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/redirects/:id', requireAdmin, requireRole('Super Admin', 'Content Editor'), (req, res) => {
   db.prepare(`DELETE FROM seo_redirects WHERE id = ?`).run(Number(req.params.id));
   res.json({ deleted: true });
 });
 
 // Plugins Hub
-app.patch('/api/admin/plugins/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.patch('/api/admin/plugins/:id', requireAdmin, requireRole('Super Admin'), (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id);
   const { is_enabled, config } = req.body as {
     is_enabled?: boolean;
@@ -1451,7 +1702,7 @@ app.patch('/api/admin/plugins/:id', requireAdmin, (req: AuthenticatedRequest, re
 });
 
 // Customers CRM Tags
-app.patch('/api/admin/customers/:phone/tags', requireAdmin, (req, res) => {
+app.patch('/api/admin/customers/:phone/tags', requireAdmin, requireRole('Super Admin', 'Shop Manager', 'Customer Support'), (req, res) => {
   const phone = String(req.params.phone);
   const { tags } = req.body as { tags?: string[] };
   db.prepare(`INSERT OR REPLACE INTO customer_tags (phone, tags) VALUES (?, ?)`).run(
@@ -1461,8 +1712,12 @@ app.patch('/api/admin/customers/:phone/tags', requireAdmin, (req, res) => {
   res.json({ customers: getCustomersDirectory() });
 });
 
+function trimmedNextLengthInvalid(pwd: string): boolean {
+  return pwd.length > 0 && pwd.length < 6;
+}
+
 // RBAC Users & API Keys
-app.post('/api/admin/users', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.post('/api/admin/users', requireAdmin, requireRole('Super Admin'), (req: AuthenticatedRequest, res) => {
   const { name, email, role, password } = req.body as {
     name?: string;
     email?: string;
@@ -1499,11 +1754,7 @@ app.post('/api/admin/users', requireAdmin, (req: AuthenticatedRequest, res) => {
   }
 });
 
-function trimmedNextLengthInvalid(pwd: string): boolean {
-  return pwd.length > 0 && pwd.length < 6;
-}
-
-app.patch('/api/admin/users/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.patch('/api/admin/users/:id', requireAdmin, requireRole('Super Admin'), (req: AuthenticatedRequest, res) => {
   const id = Number(req.params.id);
   const { role, status, password } = req.body as {
     role?: RbacRole;
@@ -1531,7 +1782,7 @@ app.patch('/api/admin/users/:id', requireAdmin, (req: AuthenticatedRequest, res)
   res.json({ users: getRbacUsers() });
 });
 
-app.delete('/api/admin/users/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.delete('/api/admin/users/:id', requireAdmin, requireRole('Super Admin'), (req: AuthenticatedRequest, res) => {
   const id = Number(req.params.id);
   const target = db
     .prepare(`SELECT id, email, role FROM rbac_users WHERE id = ?`)
@@ -1555,7 +1806,7 @@ app.delete('/api/admin/users/:id', requireAdmin, (req: AuthenticatedRequest, res
   res.json({ deleted: true });
 });
 
-app.post('/api/admin/api-keys', requireAdmin, (req: AuthenticatedRequest, res) => {
+app.post('/api/admin/api-keys', requireAdmin, requireRole('Super Admin'), (req: AuthenticatedRequest, res) => {
   const { name, permissions } = req.body as { name?: string; permissions?: string };
   if (!name?.trim()) {
     res.status(400).json({ error: 'Key name is required.' });
@@ -1563,9 +1814,11 @@ app.post('/api/admin/api-keys', requireAdmin, (req: AuthenticatedRequest, res) =
   }
   const rawSecret = `msh_live_${crypto.randomBytes(16).toString('hex')}`;
   const preview = `${rawSecret.slice(0, 12)}••••••${rawSecret.slice(-4)}`;
-  db.prepare(`INSERT INTO api_keys (name, key_preview, permissions, created_at) VALUES (?, ?, ?, ?)`).run(
+  const keyHash = crypto.createHash('sha256').update(rawSecret).digest('hex');
+  db.prepare(`INSERT INTO api_keys (name, key_preview, key_hash, permissions, created_at) VALUES (?, ?, ?, ?, ?)`).run(
     name.trim(),
     preview,
+    keyHash,
     permissions || 'catalog:read, orders:read',
     new Date().toISOString()
   );
@@ -1574,13 +1827,13 @@ app.post('/api/admin/api-keys', requireAdmin, (req: AuthenticatedRequest, res) =
   res.status(201).json({ secret: rawSecret, apiKeys: getApiKeys() });
 });
 
-app.delete('/api/admin/api-keys/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/api-keys/:id', requireAdmin, requireRole('Super Admin'), (req, res) => {
   db.prepare(`DELETE FROM api_keys WHERE id = ?`).run(Number(req.params.id));
   res.json({ deleted: true });
 });
 
 // Reviews Moderation
-app.patch('/api/admin/reviews/:id', requireAdmin, (req, res) => {
+app.patch('/api/admin/reviews/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager', 'Content Editor', 'Customer Support'), (req, res) => {
   const id = Number(req.params.id);
   const { is_approved, status, admin_reply } = req.body as {
     is_approved?: boolean;
@@ -1598,13 +1851,13 @@ app.patch('/api/admin/reviews/:id', requireAdmin, (req, res) => {
   res.json({ updated: true });
 });
 
-app.delete('/api/admin/reviews/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/reviews/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager', 'Content Editor', 'Customer Support'), (req, res) => {
   db.prepare(`DELETE FROM reviews WHERE id = ?`).run(Number(req.params.id));
   res.json({ deleted: true });
 });
 
 // Return Requests Management
-app.patch('/api/admin/returns/:id', requireAdmin, (req, res) => {
+app.patch('/api/admin/returns/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager', 'Customer Support'), (req, res) => {
   const id = Number(req.params.id);
   const { status, admin_note } = req.body as { status?: ReturnStatus; admin_note?: string | null };
   const valid: ReturnStatus[] = ['requested', 'approved', 'pickup_scheduled', 'completed', 'rejected'];
@@ -1621,20 +1874,20 @@ app.patch('/api/admin/returns/:id', requireAdmin, (req, res) => {
 });
 
 // Contact Messages Inbox
-app.patch('/api/admin/messages/:id', requireAdmin, (req, res) => {
+app.patch('/api/admin/messages/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager', 'Customer Support'), (req, res) => {
   const id = Number(req.params.id);
   const { status } = req.body as { status?: 'unread' | 'replied' | 'resolved' };
   db.prepare(`UPDATE contact_messages SET status = ? WHERE id = ?`).run(status || 'resolved', id);
   res.json({ updated: true });
 });
 
-app.delete('/api/admin/messages/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/messages/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager', 'Customer Support'), (req, res) => {
   db.prepare(`DELETE FROM contact_messages WHERE id = ?`).run(Number(req.params.id));
   res.json({ deleted: true });
 });
 
 // Order Status, Tracking & Notes
-app.patch('/api/admin/orders/:id/status', requireAdmin, (req, res) => {
+app.patch('/api/admin/orders/:id/status', requireAdmin, requireRole('Super Admin', 'Shop Manager', 'Customer Support'), (req: AuthenticatedRequest, res) => {
   const orderId = Number(req.params.id);
   const { status, tracking_number, internal_notes, payment_status } = req.body as {
     status?: OrderStatus;
@@ -1657,60 +1910,102 @@ app.patch('/api/admin/orders/:id/status', requireAdmin, (req, res) => {
     return;
   }
 
-  const order = db.prepare(`SELECT id, order_number, status FROM orders WHERE id = ?`).get(orderId) as
-    | { id: number; order_number: string; status: OrderStatus }
+  const order = db.prepare(`SELECT id, order_number, status, promo_code FROM orders WHERE id = ?`).get(orderId) as
+    | { id: number; order_number: string; status: OrderStatus; promo_code: string | null }
     | undefined;
   if (!order) {
     res.status(404).json({ error: 'Order not found.' });
     return;
   }
 
-  db.transaction(() => {
-    if (status) {
-      db.prepare(`UPDATE orders SET status = ? WHERE id = ?`).run(status, orderId);
-      if (order.status !== 'cancelled' && order.status !== 'refunded' && (status === 'cancelled' || status === 'refunded')) {
-        const items = db
-          .prepare(`SELECT variant_id, quantity FROM order_items WHERE order_id = ? AND variant_id IS NOT NULL`)
-          .all(orderId) as Array<{ variant_id: number; quantity: number }>;
-        const restore = db.prepare(`UPDATE product_variants SET stock = stock + ? WHERE id = ?`);
-        for (const item of items) {
-          restore.run(item.quantity, item.variant_id);
-        }
-      }
-    }
-    if (tracking_number !== undefined) {
-      db.prepare(`UPDATE orders SET tracking_number = ? WHERE id = ?`).run(tracking_number, orderId);
-    }
-    if (internal_notes !== undefined) {
-      db.prepare(`UPDATE orders SET internal_notes = ? WHERE id = ?`).run(internal_notes, orderId);
-    }
-    if (payment_status !== undefined) {
-      db.prepare(`UPDATE orders SET payment_status = ? WHERE id = ?`).run(payment_status, orderId);
-    }
-  })();
+  try {
+    db.transaction(() => {
+      if (status) {
+        const wasInactive = order.status === 'cancelled' || order.status === 'refunded';
+        const willBeInactive = status === 'cancelled' || status === 'refunded';
 
-  const actor = actorOf(req);
-  logAudit(actor.name, actor.role, 'order.updated', order.order_number, `Status: ${status || order.status}`);
-  const updated = getOrders().find((o) => o.id === orderId);
-  res.json({ order: updated });
+        if (!wasInactive && willBeInactive) {
+          const items = db
+            .prepare(`SELECT variant_id, quantity, pack_details FROM order_items WHERE order_id = ?`)
+            .all(orderId) as Array<{ variant_id: number | null; quantity: number; pack_details: string | null }>;
+          const restore = db.prepare(`UPDATE product_variants SET stock = stock + ? WHERE id = ?`);
+          for (const item of items) {
+            if (item.variant_id) {
+              restore.run(item.quantity, item.variant_id);
+            } else if (item.pack_details) {
+              const parsed = parsePackDetails(item.pack_details);
+              for (const packVar of parsed.items) {
+                restore.run(packVar.qty * item.quantity, packVar.variant_id);
+              }
+            }
+          }
+          if (order.promo_code) {
+            db.prepare(`UPDATE promo_codes SET usage_count = MAX(0, usage_count - 1) WHERE code = ?`).run(order.promo_code);
+          }
+        } else if (wasInactive && !willBeInactive) {
+          const items = db
+            .prepare(`SELECT variant_id, quantity, pack_details FROM order_items WHERE order_id = ?`)
+            .all(orderId) as Array<{ variant_id: number | null; quantity: number; pack_details: string | null }>;
+          const variantAdjustments = new Map<number, number>();
+          for (const item of items) {
+            if (item.variant_id) {
+              variantAdjustments.set(item.variant_id, (variantAdjustments.get(item.variant_id) ?? 0) + item.quantity);
+            } else if (item.pack_details) {
+              const parsed = parsePackDetails(item.pack_details);
+              for (const packVar of parsed.items) {
+                variantAdjustments.set(
+                  packVar.variant_id,
+                  (variantAdjustments.get(packVar.variant_id) ?? 0) + packVar.qty * item.quantity
+                );
+              }
+            }
+          }
+          const getStock = db.prepare(`SELECT stock, color_name, size FROM product_variants WHERE id = ?`);
+          const deduct = db.prepare(`UPDATE product_variants SET stock = stock - ? WHERE id = ?`);
+          for (const [vid, needed] of variantAdjustments.entries()) {
+            const vRow = getStock.get(vid) as { stock: number; color_name: string; size: string } | undefined;
+            if (!vRow) continue;
+            if (vRow.stock < needed) {
+              throw new Error(`Insufficient stock (${vRow.stock} left, need ${needed}) to reactivate ${vRow.color_name} · ${vRow.size}.`);
+            }
+            deduct.run(needed, vid);
+          }
+          if (order.promo_code) {
+            db.prepare(`UPDATE promo_codes SET usage_count = usage_count + 1 WHERE code = ?`).run(order.promo_code);
+          }
+        }
+
+        db.prepare(`UPDATE orders SET status = ? WHERE id = ?`).run(status, orderId);
+      }
+      if (tracking_number !== undefined) {
+        db.prepare(`UPDATE orders SET tracking_number = ? WHERE id = ?`).run(tracking_number, orderId);
+      }
+      if (internal_notes !== undefined) {
+        db.prepare(`UPDATE orders SET internal_notes = ? WHERE id = ?`).run(internal_notes, orderId);
+      }
+      if (payment_status !== undefined) {
+        db.prepare(`UPDATE orders SET payment_status = ? WHERE id = ?`).run(payment_status, orderId);
+      }
+    })();
+
+    const actor = actorOf(req);
+    logAudit(actor.name, actor.role, 'order.updated', order.order_number, `Status: ${status || order.status}`);
+    const updated = getOrders().find((o) => o.id === orderId);
+    res.json({ order: updated });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Unable to update order status.' });
+  }
 });
 
-app.put('/api/admin/cms', requireAdmin, (req: AuthenticatedRequest, res) => {
-  const body = req.body as { cms?: ReturnType<typeof getCmsSettings>; new_admin_password?: string };
-  if (body.new_admin_password && body.new_admin_password.trim().length > 0) {
-    if (body.new_admin_password.trim().length < 6) {
-      res.status(400).json({ error: 'New admin password must be at least 6 characters.' });
-      return;
-    }
-    setAdminPassword(body.new_admin_password.trim(), req.adminUser?.id);
-  }
+app.put('/api/admin/cms', requireAdmin, requireRole('Super Admin'), (req: AuthenticatedRequest, res) => {
+  const body = req.body as { cms?: ReturnType<typeof getCmsSettings> };
   const updatedCms = body.cms ? updateCmsSettings(body.cms) : getCmsSettings();
   const actor = actorOf(req);
   logAudit(actor.name, actor.role, 'settings.saved', 'CMS Settings', 'Updated site configuration & theme settings');
   res.json({ cms: updatedCms });
 });
 
-app.post('/api/admin/promos', requireAdmin, (req, res) => {
+app.post('/api/admin/promos', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req, res) => {
   const { code, discount_type, discount_value, min_subtotal, usage_limit, expires_at } = req.body as {
     code?: string;
     discount_type?: 'percent' | 'fixed' | 'free_shipping';
@@ -1751,7 +2046,7 @@ app.post('/api/admin/promos', requireAdmin, (req, res) => {
   }
 });
 
-app.patch('/api/admin/promos/:id', requireAdmin, (req, res) => {
+app.patch('/api/admin/promos/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req, res) => {
   const id = Number(req.params.id);
   const { is_active } = req.body as { is_active?: boolean };
   db.prepare(`UPDATE promo_codes SET is_active = ? WHERE id = ?`).run(is_active ? 1 : 0, id);
@@ -1759,14 +2054,14 @@ app.patch('/api/admin/promos/:id', requireAdmin, (req, res) => {
   res.json({ promo });
 });
 
-app.delete('/api/admin/promos/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/promos/:id', requireAdmin, requireRole('Super Admin', 'Shop Manager'), (req, res) => {
   const id = Number(req.params.id);
   db.prepare(`DELETE FROM promo_codes WHERE id = ?`).run(id);
   res.json({ deleted: true });
 });
 
 // One-click JSON Backup Export
-app.get('/api/admin/export', requireAdmin, (_req, res) => {
+app.get('/api/admin/export', requireAdmin, requireRole('Super Admin'), (_req, res) => {
   const payload = {
     exported_at: new Date().toISOString(),
     cms: getCmsSettings(),
@@ -1782,6 +2077,16 @@ app.get('/api/admin/export', requireAdmin, (_req, res) => {
   };
   res.setHeader('Content-Disposition', 'attachment; filename="mashuka-backup.json"');
   res.json(payload);
+});
+
+// JSON error handler for Multer / request errors
+app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+  if (err && (req.path.startsWith('/api/') || err instanceof multer.MulterError)) {
+    const message = err instanceof Error ? err.message : 'Request failed.';
+    res.status(400).json({ error: message });
+    return;
+  }
+  next(err);
 });
 
 // ---------- SEO REDIRECTS & VITE / STATIC PRODUCTION SERVING ----------
@@ -1802,9 +2107,10 @@ app.use((req, res, next) => {
   const match = db
     .prepare(`SELECT id, to_path, status_code FROM seo_redirects WHERE from_path = ?`)
     .get(reqPath) as { id: number; to_path: string; status_code: number } | undefined;
-  if (match && match.to_path && match.to_path !== reqPath) {
+  const safeTarget = sanitizeInternalPath(match?.to_path);
+  if (match && safeTarget && safeTarget !== reqPath) {
     db.prepare(`UPDATE seo_redirects SET hits = hits + 1 WHERE id = ?`).run(match.id);
-    res.redirect(match.status_code === 302 ? 302 : 301, match.to_path);
+    res.redirect(match.status_code === 302 ? 302 : 301, safeTarget);
     return;
   }
   next();

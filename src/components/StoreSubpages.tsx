@@ -599,6 +599,7 @@ export function DynamicCmsPageView({
   const [contactMsg, setContactMsg] = useState('');
   const [contactSent, setContactSent] = useState(false);
   const [contactError, setContactError] = useState('');
+  const [contactSubmitting, setContactSubmitting] = useState(false);
 
   const pageProducts = products.filter(
     (p) => p.display_pages.includes(page.slug) || (page.show_products && p.is_featured)
@@ -607,27 +608,35 @@ export function DynamicCmsPageView({
   const handleContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setContactError('');
-    const res = await fetch('/api/contact', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: contactName,
-        email: contactEmail,
-        phone: contactPhone,
-        subject: contactSubject,
-        message: contactMsg,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setContactError(data.error || 'Could not send message.');
-    } else {
-      setContactSent(true);
-      setContactName('');
-      setContactEmail('');
-      setContactPhone('');
-      setContactSubject('');
-      setContactMsg('');
+    setContactSent(false);
+    setContactSubmitting(true);
+    try {
+      const res = await fetch('/api/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: contactName,
+          email: contactEmail,
+          phone: contactPhone,
+          subject: contactSubject,
+          message: contactMsg,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setContactError(data.error || 'Could not send message.');
+      } else {
+        setContactSent(true);
+        setContactName('');
+        setContactEmail('');
+        setContactPhone('');
+        setContactSubject('');
+        setContactMsg('');
+      }
+    } catch {
+      setContactError('Network error while sending message.');
+    } finally {
+      setContactSubmitting(false);
     }
   };
 
@@ -740,9 +749,10 @@ export function DynamicCmsPageView({
                 />
                 <button
                   type="submit"
-                  className="h-10 px-5 rounded-lg bg-[#111315] text-white text-xs font-medium hover:bg-[#1D4ED8] transition-colors"
+                  disabled={contactSubmitting}
+                  className="h-10 px-5 rounded-lg bg-[#111315] text-white text-xs font-medium hover:bg-[#1D4ED8] disabled:opacity-50 transition-colors"
                 >
-                  Send Message
+                  {contactSubmitting ? 'Sending...' : 'Send Message'}
                 </button>
               </form>
             </div>

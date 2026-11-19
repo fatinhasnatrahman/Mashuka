@@ -15,6 +15,7 @@ import {
   Minus,
 } from 'lucide-react';
 import type { MediaItem } from '../../../types.ts';
+import { RichContentRenderer } from '../../../utils/richText.tsx';
 import { SafeImage } from '../../SafeImage.tsx';
 import { Modal } from './Modal.tsx';
 
@@ -71,96 +72,6 @@ export function RichEditor({
 
   const wordCount = value.trim() ? value.trim().split(/\s+/).length : 0;
   const readMinutes = Math.max(1, Math.ceil(wordCount / 200));
-
-  const renderPreview = (raw: string) => {
-    const blocks = raw.split(/\n{2,}/).filter((b) => b.trim());
-    if (blocks.length === 0) {
-      return (
-        <p className="text-xs text-[#9CA3AF] italic">
-          Nothing to preview yet. Switch to Write mode to compose content.
-        </p>
-      );
-    }
-    return blocks.map((block, idx) => {
-      const trimmed = block.trim();
-      if (trimmed.startsWith('### ')) {
-        return (
-          <h3 key={idx} className="text-base font-bold text-[#111315] dark:text-white mt-4">
-            {trimmed.slice(4)}
-          </h3>
-        );
-      }
-      if (trimmed.startsWith('## ')) {
-        return (
-          <h2 key={idx} className="text-lg font-bold text-[#111315] dark:text-white mt-5">
-            {trimmed.slice(3)}
-          </h2>
-        );
-      }
-      if (trimmed.startsWith('> ')) {
-        return (
-          <blockquote
-            key={idx}
-            className="px-4 py-3 rounded-lg bg-[#F9FAFB] dark:bg-[#0E1117] border border-[#E4E6EB] dark:border-[#2C3344] text-sm italic text-[#374151] dark:text-[#D1D5DB]"
-          >
-            {trimmed.slice(2)}
-          </blockquote>
-        );
-      }
-      if (trimmed.startsWith('```')) {
-        const code = trimmed.replace(/^```[a-z]*\n?/i, '').replace(/```$/, '');
-        return (
-          <pre
-            key={idx}
-            className="p-3 rounded-lg bg-[#111315] text-[#E5E7EB] text-xs font-mono overflow-x-auto"
-          >
-            <code>{code}</code>
-          </pre>
-        );
-      }
-      if (trimmed.startsWith('![')) {
-        const match = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
-        if (match) {
-          return (
-            <figure key={idx} className="my-3 space-y-1">
-              <SafeImage
-                src={match[2]}
-                alt={match[1] || 'Editorial media'}
-                className="w-full max-h-64 object-cover rounded-lg border border-[#E4E6EB] dark:border-[#2C3344]"
-              />
-              {match[1] && (
-                <figcaption className="text-[11px] text-[#525866] dark:text-[#9CA3AF]">
-                  {match[1]}
-                </figcaption>
-              )}
-            </figure>
-          );
-        }
-      }
-      if (trimmed.startsWith('- ') || trimmed.startsWith('1. ')) {
-        const lines = trimmed.split('\n');
-        const ordered = trimmed.startsWith('1. ');
-        const ListTag = ordered ? 'ol' : 'ul';
-        return (
-          <ListTag
-            key={idx}
-            className={`pl-5 space-y-1 text-sm text-[#374151] dark:text-[#D1D5DB] ${
-              ordered ? 'list-decimal' : 'list-disc'
-            }`}
-          >
-            {lines.map((line, i) => (
-              <li key={i}>{line.replace(/^(-|\d+\.)\s+/, '')}</li>
-            ))}
-          </ListTag>
-        );
-      }
-      return (
-        <p key={idx} className="text-sm leading-relaxed text-[#374151] dark:text-[#D1D5DB]">
-          {trimmed}
-        </p>
-      );
-    });
-  };
 
   return (
     <div className="rounded-xl border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117] overflow-hidden">
@@ -296,7 +207,15 @@ export function RichEditor({
           className="w-full p-4 text-sm leading-relaxed bg-transparent text-[#111315] dark:text-[#F3F4F6] placeholder:text-[#9CA3AF] focus:outline-none resize-y font-sans"
         />
       ) : (
-        <div className="p-5 min-h-[240px] space-y-3">{renderPreview(value)}</div>
+        <div className="p-5 min-h-[240px]">
+          {value.trim() ? (
+            <RichContentRenderer content={value} />
+          ) : (
+            <p className="text-xs text-[#9CA3AF] italic">
+              Nothing to preview yet. Switch to Write mode to compose content.
+            </p>
+          )}
+        </div>
       )}
 
       <div className="px-4 py-2 border-t border-[#E4E6EB] dark:border-[#252A36] bg-[#F9FAFB] dark:bg-[#14171F] flex items-center justify-between text-[11px] text-[#525866] dark:text-[#9CA3AF] font-mono tabular-nums">

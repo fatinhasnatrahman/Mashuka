@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
@@ -73,6 +73,11 @@ export function DataTable<T>({
 
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
   const safePage = Math.min(page, totalPages);
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
   const pagedRows = useMemo(() => {
     const start = (safePage - 1) * pageSize;
     return sortedRows.slice(start, start + pageSize);

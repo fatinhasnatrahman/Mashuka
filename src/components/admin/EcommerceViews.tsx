@@ -42,6 +42,22 @@ const ORDER_STATUS_STYLE: Record<OrderStatus, string> = {
   refunded: 'bg-[#F3F4F6] text-[#374151] dark:bg-[#27272A] dark:text-[#D4D4D8]',
 };
 
+function parseOrderPackLabels(raw?: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((v): v is string => typeof v === 'string');
+    }
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.labels)) {
+      return parsed.labels.filter((v: unknown): v is string => typeof v === 'string');
+    }
+  } catch {
+    return [];
+  }
+  return [];
+}
+
 // ==========================================
 // 1. PRODUCT EDITOR MODAL + PRODUCTS VIEW
 // ==========================================
@@ -89,7 +105,9 @@ export function ProductEditorModal({ open, product, ctx, onClose }: ProductEdito
   const [compareAt, setCompareAt] = useState(
     product?.compare_at_price ? String(product.compare_at_price) : ''
   );
-  const [costPrice, setCostPrice] = useState(product?.cost_price ? String(product.cost_price) : '95');
+  const [costPrice, setCostPrice] = useState(
+    product ? (product.cost_price != null ? String(product.cost_price) : '') : '95'
+  );
   const [saleStart, setSaleStart] = useState(product?.sale_start || '');
   const [saleEnd, setSaleEnd] = useState(product?.sale_end || '');
   const [tagsInput, setTagsInput] = useState((product?.tags || []).join(', '));
@@ -151,7 +169,8 @@ export function ProductEditorModal({ open, product, ctx, onClose }: ProductEdito
   }, [data.pages]);
 
   const numericPrice = Math.max(0, Number(price) || 0);
-  const numericCost = Math.max(0, Number(costPrice) || 0);
+  const hasCostPrice = costPrice.trim() !== '';
+  const numericCost = hasCostPrice ? Math.max(0, Number(costPrice) || 0) : 0;
   const marginBDT = numericPrice - numericCost;
   const marginPct = numericPrice > 0 ? Math.round((marginBDT / numericPrice) * 100) : 0;
 
@@ -424,7 +443,9 @@ export function ProductEditorModal({ open, product, ctx, onClose }: ProductEdito
                     Pricing &amp; Margin Calculator
                   </span>
                   <span className="text-xs font-mono tabular-nums text-[#16A34A] dark:text-[#4ADE80]">
-                    Profit: {formatBDT(marginBDT)} ({marginPct}% margin)
+                    {hasCostPrice
+                      ? `Profit: ${formatBDT(marginBDT)} (${marginPct}% margin)`
+                      : 'Enter COGS to calculate margin'}
                   </span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -987,6 +1008,7 @@ export function ProductsView({
           <button
             type="button"
             onClick={() => setEditing(p)}
+            aria-label="Edit product"
             className="p-1.5 rounded-md border border-[#E4E6EB] dark:border-[#2C3344] hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430]"
             title="Edit product"
           >
@@ -994,14 +1016,21 @@ export function ProductsView({
           </button>
           <button
             type="button"
+            aria-label="Delete product"
             onClick={async () => {
-              await fetch(`/api/admin/products/${p.id}`, {
-                method: 'DELETE',
-                headers: authHeaders(),
-              });
-              toast('Product deleted.');
-              await reload();
-              notifyStoreChanged();
+              try {
+                const res = await fetch(`/api/admin/products/${p.id}`, {
+                  method: 'DELETE',
+                  headers: authHeaders(),
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(json.error || 'Failed to delete product.');
+                toast('Product deleted.');
+                await reload();
+                notifyStoreChanged();
+              } catch (err) {
+                toast(err instanceof Error ? err.message : 'Unable to delete product.', 'error');
+              }
             }}
             className="p-1.5 rounded-md border border-[#FECACA] text-[#DC2626] hover:bg-[#FEF2F2] dark:hover:bg-[#2A1519]"
             title="Delete product"
@@ -1629,21 +1658,31 @@ export function OrdersView({ ctx }: { ctx: AdminContextHelpers }) {
                 Itemized Pairs
               </div>
               <div className="divide-y divide-[#E4E6EB] dark:divide-[#252A36]">
-                {activeOrder.items.map((item) => (
-                  <div key={item.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
-                    <div>
-                      <div className="font-semibold text-[#111315] dark:text-white">
-                        {item.item_name}
+                {activeOrder.items.map((item) => {
+                  const packLabels = parseOrderPackLabels(item.pack_details);
+                  return (
+                    <div key={item.id} className="px-4 py-2.5 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold text-[#111315] dark:text-white">
+                          {item.item_name}
+                        </div>
+                        <div className="text-[11px] text-[#6B7280] dark:text-[#9CA3AF]">
+                          {item.variant_label} × {item.quantity}
+                        </div>
+                        {packLabels.length > 0 && (
+                          <div className="mt-1 text-[11px] text-[#525866] dark:text-[#9CA3AF] space-y-0.5">
+                            {packLabels.map((lbl, idx) => (
+                              <div key={idx}>• {lbl}</div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div className="text-[11px] text-[#6B7280] dark:text-[#9CA3AF]">
-                        {item.variant_label} × {item.quantity}
+                      <div className="font-mono font-semibold tabular-nums">
+                        {formatBDT(item.line_total)}
                       </div>
                     </div>
-                    <div className="font-mono font-semibold tabular-nums">
-                      {formatBDT(item.line_total)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               <div className="px-4 py-3 bg-[#F9FAFB] dark:bg-[#10131A] border-t border-[#E4E6EB] dark:border-[#252A36] space-y-1 font-mono tabular-nums">
                 <div className="flex justify-between text-[#525866] dark:text-[#9CA3AF]">
@@ -1749,19 +1788,27 @@ export function OrdersView({ ctx }: { ctx: AdminContextHelpers }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E4E6EB]">
-                {invoiceOrder.items.map((it) => (
-                  <tr key={it.id}>
-                    <td className="py-2">
-                      <div className="font-semibold">{it.item_name}</div>
-                      <div className="text-[11px] text-[#525866]">{it.variant_label}</div>
-                    </td>
-                    <td className="py-2 text-right font-mono">{it.quantity}</td>
-                    <td className="py-2 text-right font-mono">{formatBDT(it.unit_price)}</td>
-                    <td className="py-2 text-right font-mono font-semibold">
-                      {formatBDT(it.line_total)}
-                    </td>
-                  </tr>
-                ))}
+                {invoiceOrder.items.map((it) => {
+                  const packLabels = parseOrderPackLabels(it.pack_details);
+                  return (
+                    <tr key={it.id}>
+                      <td className="py-2">
+                        <div className="font-semibold">{it.item_name}</div>
+                        <div className="text-[11px] text-[#525866]">{it.variant_label}</div>
+                        {packLabels.length > 0 && (
+                          <div className="mt-0.5 text-[10px] text-[#6B7280]">
+                            {packLabels.join(' · ')}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2 text-right font-mono">{it.quantity}</td>
+                      <td className="py-2 text-right font-mono">{formatBDT(it.unit_price)}</td>
+                      <td className="py-2 text-right font-mono font-semibold">
+                        {formatBDT(it.line_total)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
 
@@ -1989,7 +2036,8 @@ export function CustomersView({ ctx }: { ctx: AdminContextHelpers }) {
 // ==========================================
 
 export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
-  const { data, authHeaders, reload, notifyStoreChanged, toast } = ctx;
+  const { data, currentUser, authHeaders, reload, notifyStoreChanged, toast } = ctx;
+  const canEditCms = currentUser.role === 'Super Admin';
   const [code, setCode] = useState('');
   const [discountType, setDiscountType] = useState<'percent' | 'fixed' | 'free_shipping'>('percent');
   const [discountValue, setDiscountValue] = useState('15');
@@ -2020,29 +2068,32 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
 
   const handleHeroImageUpload = async (file?: File) => {
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const res = await fetch('/api/admin/upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({
-            filename: file.name,
-            dataUrl: reader.result,
-            title: `${data.cms.brand_name} Hero Banner`,
-            alt_text: heroDraft.hero_title || 'Hero banner image',
-          }),
-        });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Upload failed');
-        setHeroDraft((prev) => ({ ...prev, hero_image_url: json.url }));
-        toast('Hero image uploaded and selected.');
-        await reload();
-      } catch (err) {
-        toast(err instanceof Error ? err.message : 'Upload failed', 'error');
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const form = new FormData();
+      form.append('image', file);
+      const res = await fetch('/api/admin/upload', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: form,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Upload failed');
+      await fetch('/api/admin/media/meta', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          url: json.url,
+          title: `${data.cms.brand_name} Hero Banner`,
+          alt_text: heroDraft.hero_title || 'Hero banner image',
+          caption: '',
+        }),
+      }).catch(() => {});
+      setHeroDraft((prev) => ({ ...prev, hero_image_url: json.url }));
+      toast('Hero image uploaded and selected.');
+      await reload();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Upload failed', 'error');
+    }
   };
 
   const handleCreatePromo = async () => {
@@ -2073,6 +2124,10 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
   };
 
   const handleSaveHero = async () => {
+    if (!canEditCms) {
+      toast('Super Admin role required to update storefront banner settings.', 'error');
+      return;
+    }
     setSavingHero(true);
     try {
       const nextCms: CmsSettings = { ...data.cms, ...heroDraft };
@@ -2081,7 +2136,8 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ cms: nextCms }),
       });
-      if (!res.ok) throw new Error('Failed to save banner');
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Failed to save banner');
       toast('Homepage Hero & Announcement Bar updated.');
       await reload();
       notifyStoreChanged();
@@ -2239,13 +2295,19 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
                   <button
                     type="button"
                     onClick={async () => {
-                      await fetch(`/api/admin/promos/${p.id}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                        body: JSON.stringify({ is_active: !p.is_active }),
-                      });
-                      await reload();
-                      notifyStoreChanged();
+                      try {
+                        const res = await fetch(`/api/admin/promos/${p.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                          body: JSON.stringify({ is_active: !p.is_active }),
+                        });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(json.error || 'Failed to update coupon');
+                        await reload();
+                        notifyStoreChanged();
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : 'Update failed', 'error');
+                      }
                     }}
                     className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
                       p.is_active
@@ -2264,14 +2326,22 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
                 render: (p: PromoCode) => (
                   <button
                     type="button"
+                    aria-label="Delete coupon"
+                    title="Delete coupon"
                     onClick={async () => {
-                      await fetch(`/api/admin/promos/${p.id}`, {
-                        method: 'DELETE',
-                        headers: authHeaders(),
-                      });
-                      toast('Coupon removed.');
-                      await reload();
-                      notifyStoreChanged();
+                      try {
+                        const res = await fetch(`/api/admin/promos/${p.id}`, {
+                          method: 'DELETE',
+                          headers: authHeaders(),
+                        });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(json.error || 'Failed to delete coupon');
+                        toast('Coupon removed.');
+                        await reload();
+                        notifyStoreChanged();
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+                      }
                     }}
                     className="p-1 text-[#DC2626] hover:opacity-80"
                   >
@@ -2288,15 +2358,21 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
           <div className="text-sm font-bold text-[#111315] dark:text-white">
             Homepage Hero &amp; Announcement Bar
           </div>
+          {!canEditCms && (
+            <div className="p-2.5 rounded-lg border border-[#FDE68A] bg-[#FEF3C7]/60 dark:border-[#78350F] dark:bg-[#451A03]/30 text-[11px] text-[#92400E] dark:text-[#FCD34D]">
+              Read-only: Super Admin permissions are required to modify Homepage Hero &amp; Announcement Bar settings.
+            </div>
+          )}
           <label className="block space-y-1">
             <span className="text-xs font-medium text-[#374151] dark:text-[#D1D5DB]">
               Announcement Strip Text
             </span>
             <input
               type="text"
+              disabled={!canEditCms}
               value={heroDraft.announcement_text}
               onChange={(e) => setHeroDraft({ ...heroDraft, announcement_text: e.target.value })}
-              className="w-full h-9 px-3 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117]"
+              className="w-full h-9 px-3 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117] disabled:opacity-60"
             />
           </label>
           <label className="block space-y-1">
@@ -2305,9 +2381,10 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
             </span>
             <input
               type="text"
+              disabled={!canEditCms}
               value={heroDraft.hero_title}
               onChange={(e) => setHeroDraft({ ...heroDraft, hero_title: e.target.value })}
-              className="w-full h-9 px-3 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117]"
+              className="w-full h-9 px-3 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117] disabled:opacity-60"
             />
           </label>
           <label className="block space-y-1">
@@ -2316,9 +2393,10 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
             </span>
             <textarea
               rows={2}
+              disabled={!canEditCms}
               value={heroDraft.hero_subtitle}
               onChange={(e) => setHeroDraft({ ...heroDraft, hero_subtitle: e.target.value })}
-              className="w-full p-2.5 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117]"
+              className="w-full p-2.5 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117] disabled:opacity-60"
             />
           </label>
           <div className="grid grid-cols-2 gap-3">
@@ -2328,9 +2406,10 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
               </span>
               <input
                 type="text"
+                disabled={!canEditCms}
                 value={heroDraft.hero_cta_label}
                 onChange={(e) => setHeroDraft({ ...heroDraft, hero_cta_label: e.target.value })}
-                className="w-full h-9 px-3 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117]"
+                className="w-full h-9 px-3 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117] disabled:opacity-60"
               />
             </label>
             <label className="block space-y-1">
@@ -2339,9 +2418,10 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
               </span>
               <div className="flex items-center gap-1.5">
                 <select
+                  disabled={!canEditCms}
                   value={heroDraft.hero_image_url}
                   onChange={(e) => setHeroDraft({ ...heroDraft, hero_image_url: e.target.value })}
-                  className="flex-1 min-w-0 h-9 px-2 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117]"
+                  className="flex-1 min-w-0 h-9 px-2 text-xs rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117] disabled:opacity-60"
                 >
                   {data.media
                     .filter((m) => m.media_type === 'image')
@@ -2351,12 +2431,13 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
                       </option>
                     ))}
                 </select>
-                <label className="h-9 px-2.5 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-[#F9FAFB] dark:bg-[#0E1117] hover:bg-[#F3F4F6] text-xs font-medium inline-flex items-center gap-1 cursor-pointer shrink-0">
+                <label className={`h-9 px-2.5 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-[#F9FAFB] dark:bg-[#0E1117] hover:bg-[#F3F4F6] text-xs font-medium inline-flex items-center gap-1 shrink-0 ${canEditCms ? 'cursor-pointer' : 'opacity-50 pointer-events-none'}`}>
                   <Upload className="w-3.5 h-3.5" />
                   <span>Upload</span>
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={!canEditCms}
                     className="hidden"
                     onChange={(e) => handleHeroImageUpload(e.target.files?.[0])}
                   />
@@ -2371,9 +2452,9 @@ export function MarketingView({ ctx }: { ctx: AdminContextHelpers }) {
           />
           <button
             type="button"
-            disabled={savingHero}
+            disabled={savingHero || !canEditCms}
             onClick={handleSaveHero}
-            className="h-9 px-5 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold"
+            className="h-9 px-5 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold disabled:opacity-50"
           >
             {savingHero ? 'Saving...' : 'Publish Hero Banner'}
           </button>
@@ -2441,19 +2522,29 @@ export function StoreConfigView({ ctx }: { ctx: AdminContextHelpers }) {
         <div className="text-sm font-bold text-[#111315] dark:text-white">Payment Gateways</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
           {[
-            { key: 'cod_enabled' as const, label: 'Cash on Delivery (COD)' },
-            { key: 'mobile_banking_enabled' as const, label: 'bKash & Nagad' },
-            { key: 'stripe_enabled' as const, label: 'Stripe Card Checkout' },
-            { key: 'paypal_enabled' as const, label: 'PayPal Express' },
+            { key: 'cod_enabled' as const, label: 'Cash on Delivery (COD)', supported: true },
+            { key: 'mobile_banking_enabled' as const, label: 'bKash & Nagad', supported: true },
+            { key: 'stripe_enabled' as const, label: 'Stripe Card Checkout', supported: false },
+            { key: 'paypal_enabled' as const, label: 'PayPal Express', supported: false },
           ].map((gw) => (
             <label
               key={gw.key}
-              className="p-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] flex items-center justify-between gap-2 cursor-pointer"
+              className={`p-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] flex items-center justify-between gap-2 ${
+                gw.supported ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'
+              }`}
             >
-              <span className="font-medium">{gw.label}</span>
+              <div>
+                <div className="font-medium">{gw.label}</div>
+                {!gw.supported && (
+                  <div className="text-[10px] text-[#6B7280] dark:text-[#9CA3AF]">
+                    Not integrated yet
+                  </div>
+                )}
+              </div>
               <input
                 type="checkbox"
-                checked={draft[gw.key]}
+                disabled={!gw.supported}
+                checked={gw.supported ? draft[gw.key] : false}
                 onChange={(e) => setDraft({ ...draft, [gw.key]: e.target.checked })}
               />
             </label>

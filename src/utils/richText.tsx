@@ -24,14 +24,14 @@ function renderInline(text: string): ReactNode[] {
           href={safeHref}
           target={safeHref.startsWith('http') ? '_blank' : undefined}
           rel={safeHref.startsWith('http') ? 'noopener noreferrer' : undefined}
-          className="text-[#1D4ED8] underline underline-offset-2 hover:text-[#111315]"
+          className="text-[#1D4ED8] dark:text-[#60A5FA] underline underline-offset-2 hover:text-[#111315] dark:hover:text-white"
         >
           {match[2]}
         </a>
       );
     } else if (match[4] !== undefined) {
       nodes.push(
-        <strong key={key++} className="font-semibold text-[#111315]">
+        <strong key={key++} className="font-semibold text-[#111315] dark:text-white">
           {match[4]}
         </strong>
       );
@@ -45,7 +45,7 @@ function renderInline(text: string): ReactNode[] {
       nodes.push(
         <code
           key={key++}
-          className="px-1.5 py-0.5 rounded bg-[#F3F4F6] text-[#111315] font-mono text-[0.88em]"
+          className="px-1.5 py-0.5 rounded bg-[#F3F4F6] dark:bg-[#1F2430] text-[#111315] dark:text-[#F3F4F6] font-mono text-[0.88em]"
         >
           {match[6]}
         </code>
@@ -107,7 +107,7 @@ export function RichContentRenderer({
 
     // Horizontal rule
     if (/^[-*_]{3,}$/.test(trimmed)) {
-      elements.push(<hr key={key++} className="border-t border-[#E4E6EB] my-4" />);
+      elements.push(<hr key={key++} className="border-t border-[#E4E6EB] dark:border-[#2C3344] my-4" />);
       i++;
       continue;
     }
@@ -120,10 +120,10 @@ export function RichContentRenderer({
           <img
             src={imgMatch[2].trim()}
             alt={imgMatch[1] || 'Editorial image'}
-            className="w-full max-h-[420px] object-cover rounded-xl border border-[#E4E6EB]"
+            className="w-full max-h-[420px] object-cover rounded-xl border border-[#E4E6EB] dark:border-[#2C3344]"
           />
           {imgMatch[1] && (
-            <figcaption className="text-xs text-[#6B7280]">{imgMatch[1]}</figcaption>
+            <figcaption className="text-xs text-[#6B7280] dark:text-[#9CA3AF]">{imgMatch[1]}</figcaption>
           )}
         </figure>
       );
@@ -134,7 +134,7 @@ export function RichContentRenderer({
     // Headings
     if (trimmed.startsWith('### ')) {
       elements.push(
-        <h3 key={key++} className="text-lg font-semibold text-[#111315] pt-2">
+        <h3 key={key++} className="text-lg font-semibold text-[#111315] dark:text-white pt-2">
           {renderInline(trimmed.slice(4))}
         </h3>
       );
@@ -143,7 +143,7 @@ export function RichContentRenderer({
     }
     if (trimmed.startsWith('## ')) {
       elements.push(
-        <h2 key={key++} className="text-xl font-bold text-[#111315] pt-3">
+        <h2 key={key++} className="text-xl font-bold text-[#111315] dark:text-white pt-3">
           {renderInline(trimmed.slice(3))}
         </h2>
       );
@@ -152,7 +152,7 @@ export function RichContentRenderer({
     }
     if (trimmed.startsWith('# ')) {
       elements.push(
-        <h1 key={key++} className="text-2xl font-bold text-[#111315] pt-3">
+        <h1 key={key++} className="text-2xl font-bold text-[#111315] dark:text-white pt-3">
           {renderInline(trimmed.slice(2))}
         </h1>
       );
@@ -170,7 +170,7 @@ export function RichContentRenderer({
       elements.push(
         <blockquote
           key={key++}
-          className="border-l-4 border-[#1D4ED8] pl-4 py-1 text-[#374151] italic bg-[#F6F7F8] rounded-r-lg"
+          className="border-l-4 border-[#1D4ED8] pl-4 py-1 text-[#374151] dark:text-[#D1D5DB] italic bg-[#F6F7F8] dark:bg-[#0E1117] rounded-r-lg"
         >
           {renderInline(quoteLines.join(' '))}
         </blockquote>
@@ -234,5 +234,9 @@ export function RichContentRenderer({
     elements.push(<p key={key++}>{renderInline(paraLines.join(' '))}</p>);
   }
 
-  return <div className={`space-y-4 text-[15px] leading-relaxed text-[#374151] ${className}`}>{elements}</div>;
+  return (
+    <div className={`space-y-4 text-[15px] leading-relaxed text-[#374151] dark:text-[#D1D5DB] ${className}`}>
+      {elements}
+    </div>
+  );
 }

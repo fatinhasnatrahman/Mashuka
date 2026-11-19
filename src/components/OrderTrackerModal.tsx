@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { X, Search } from 'lucide-react';
 import type { Order } from '../types.ts';
 import { formatBDT, formatDateTime } from '../utils/format.ts';
@@ -25,6 +25,15 @@ export function OrderTrackerModal({ open, onClose }: OrderTrackerModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [order, setOrder] = useState<Order | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -83,8 +92,11 @@ export function OrderTrackerModal({ open, onClose }: OrderTrackerModalProps) {
 
         <form onSubmit={handleLookup} className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-[#111315] mb-1">Order Number</label>
+            <label htmlFor="track-order-number" className="block text-xs font-medium text-[#111315] mb-1">
+              Order Number
+            </label>
             <input
+              id="track-order-number"
               required
               type="text"
               value={orderNumber}
@@ -94,8 +106,11 @@ export function OrderTrackerModal({ open, onClose }: OrderTrackerModalProps) {
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-[#111315] mb-1">Phone Number</label>
+            <label htmlFor="track-phone" className="block text-xs font-medium text-[#111315] mb-1">
+              Phone Number
+            </label>
             <input
+              id="track-phone"
               required
               type="tel"
               value={phone}
@@ -133,6 +148,12 @@ export function OrderTrackerModal({ open, onClose }: OrderTrackerModalProps) {
             <div className="text-[#525866]">
               Placed {formatDateTime(order.created_at)} · {order.city}
             </div>
+            {order.tracking_number && (
+              <div className="px-3 py-2 rounded-lg bg-white border border-[#E4E6EB] flex items-center justify-between">
+                <span className="text-[#525866]">Courier Tracking</span>
+                <span className="font-mono font-semibold text-[#111315]">{order.tracking_number}</span>
+              </div>
+            )}
             <div className="border-t border-[#E4E6EB] pt-2 space-y-1">
               {order.items.map((it) => (
                 <div key={it.id} className="flex justify-between">

@@ -10,7 +10,7 @@ import {
   AlertTriangle,
   MessageSquare,
 } from 'lucide-react';
-import type { AdminContextHelpers } from './types.ts';
+import { canAccessAdminRoute, type AdminContextHelpers } from './types.ts';
 import { formatBDT, formatDateTime } from '../../utils/format.ts';
 import { SafeImage } from '../SafeImage.tsx';
 
@@ -21,102 +21,169 @@ interface DashboardViewProps {
 
 type ChartRange = '7D' | '30D' | '90D' | '1Y';
 
-const SERIES_DATA: Record<
-  ChartRange,
-  Array<{ label: string; revenue: number; traffic: number }>
-> = {
-  '7D': [
-    { label: 'Mon', revenue: 4200, traffic: 310 },
-    { label: 'Tue', revenue: 5800, traffic: 390 },
-    { label: 'Wed', revenue: 4950, traffic: 340 },
-    { label: 'Thu', revenue: 7400, traffic: 460 },
-    { label: 'Fri', revenue: 9100, traffic: 580 },
-    { label: 'Sat', revenue: 11400, traffic: 690 },
-    { label: 'Sun', revenue: 8850, traffic: 540 },
-  ],
-  '30D': [
-    { label: 'W1', revenue: 28400, traffic: 1850 },
-    { label: 'W2', revenue: 34200, traffic: 2210 },
-    { label: 'W3', revenue: 41600, traffic: 2680 },
-    { label: 'W4', revenue: 49300, traffic: 3120 },
-  ],
-  '90D': [
-    { label: 'Month 1', revenue: 118000, traffic: 7800 },
-    { label: 'Month 2', revenue: 142500, traffic: 9400 },
-    { label: 'Month 3', revenue: 176200, traffic: 11250 },
-  ],
-  '1Y': [
-    { label: 'Q1', revenue: 310000, traffic: 21400 },
-    { label: 'Q2', revenue: 395000, traffic: 26800 },
-    { label: 'Q3', revenue: 468000, traffic: 31200 },
-    { label: 'Q4', revenue: 582000, traffic: 38900 },
-  ],
-};
-
 export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
-  const { data, navigate } = ctx;
+  const { data, currentUser, navigate } = ctx;
   const { metrics, orders, products, posts, reviews, returns } = data;
   const [range, setRange] = useState<ChartRange>('7D');
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   const chartPoints = useMemo(() => {
-    const base = SERIES_DATA[range].map((pt) => ({ ...pt }));
-    const liveOrders = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'refunded');
-    const liveRevenue = liveOrders.reduce((sum, o) => sum + (o.total || 0), 0);
-    if (base.length > 0 && liveRevenue > 0) {
-      const last = base[base.length - 1];
-      last.revenue += liveRevenue;
-      last.traffic += liveOrders.length * 18;
+    const validOrders = orders.filter(
+      (o) => o.status !== 'cancelled' && o.status !== 'refunded'
+    );
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dayMs = 86400000;
+
+    if (range === '7D') {
+      const buckets = Array.from({ length: 7 }, (_, idx) => {
+        const dayStart = startOfToday - (6 - idx) * dayMs;
+        const d = new Date(dayStart);
+        return {
+          label: d.toLocaleDateString('en-US', { weekday: 'short' }),
+          start: dayStart,
+          end: dayStart + dayMs,
+          revenue: 0,
+          ordersCount: 0,
+        };
+      });
+      for (const o of validOrders) {
+        const t = new Date(o.created_at).getTime();
+        const b = buckets.find((bucket) => t >= bucket.start && t < bucket.end);
+        if (b) {
+          b.revenue += o.total || 0;
+          b.ordersCount += 1;
+        }
+      }
+      return buckets;
     }
-    return base;
+
+    if (range === '30D') {
+      const buckets = Array.from({ length: 4 }, (_, idx) => {
+        const end = startOfToday + dayMs - (3 - idx) * 7 * dayMs;
+        const start = end - 7 * dayMs;
+        return { label: `W${idx + 1}`, start, end, revenue: 0, ordersCount: 0 };
+      });
+      for (const o of validOrders) {
+        const t = new Date(o.created_at).getTime();
+        const b = buckets.find((bucket) => t >= bucket.start && t < bucket.end);
+        if (b) {
+          b.revenue += o.total || 0;
+          b.ordersCount += 1;
+        }
+      }
+      return buckets;
+    }
+
+    if (range === '90D') {
+      const buckets = Array.from({ length: 3 }, (_, idx) => {
+        const ref = new Date(now.getFullYear(), now.getMonth() - (2 - idx), 1);
+        const start = ref.getTime();
+        const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 1).getTime();
+        return {
+          label: ref.toLocaleDateString('en-US', { month: 'short' }),
+          start,
+          end,
+          revenue: 0,
+          ordersCount: 0,
+        };
+      });
+      for (const o of validOrders) {
+        const t = new Date(o.created_at).getTime();
+        const b = buckets.find((bucket) => t >= bucket.start && t < bucket.end);
+        if (b) {
+          b.revenue += o.total || 0;
+          b.ordersCount += 1;
+        }
+      }
+      return buckets;
+    }
+
+    // 1Y: 4 quarters of current calendar year
+    const yr = now.getFullYear();
+    const buckets = [0, 1, 2, 3].map((q) => ({
+      label: `Q${q + 1}`,
+      start: new Date(yr, q * 3, 1).getTime(),
+      end: new Date(yr, q * 3 + 3, 1).getTime(),
+      revenue: 0,
+      ordersCount: 0,
+    }));
+    for (const o of validOrders) {
+      const t = new Date(o.created_at).getTime();
+      const b = buckets.find((bucket) => t >= bucket.start && t < bucket.end);
+      if (b) {
+        b.revenue += o.total || 0;
+        b.ordersCount += 1;
+      }
+    }
+    return buckets;
   }, [range, orders]);
+
   const maxRev = Math.max(...chartPoints.map((p) => p.revenue), 1);
-  const maxTraffic = Math.max(...chartPoints.map((p) => p.traffic), 1);
+  const maxOrders = Math.max(...chartPoints.map((p) => p.ordersCount), 1);
 
   const kpiCards = [
     {
       label: 'Total Revenue',
       value: formatBDT(metrics.total_revenue),
-      trend: '+18.4% vs prev.',
-      positive: true,
+      sub: `${orders.filter((o) => o.status !== 'cancelled' && o.status !== 'refunded').length} non-cancelled orders`,
     },
     {
       label: 'Total Orders',
       value: String(metrics.total_orders_count),
-      trend: '+12.1% vs prev.',
-      positive: true,
+      sub: `${metrics.active_orders_count} active in fulfillment`,
     },
     {
       label: 'Average Order Value',
       value: formatBDT(metrics.aov),
-      trend: '+4.6% vs prev.',
-      positive: true,
+      sub: metrics.total_orders_count > 0 ? 'Based on live orders' : 'No completed orders yet',
     },
     {
       label: 'Blog & Page Views',
       value: metrics.total_page_views.toLocaleString('en-US'),
-      trend: '+22.8% vs prev.',
-      positive: true,
+      sub: 'Live published post reads',
     },
     {
       label: 'Active Subscribers',
       value: metrics.active_subscribers.toLocaleString('en-US'),
-      trend: '+9.3% vs prev.',
-      positive: true,
+      sub: 'Unique order & inquiry contacts',
     },
     {
       label: 'Conversion Rate',
-      value: `${metrics.conversion_rate}%`,
-      trend: '+0.4 pts',
-      positive: true,
+      value: metrics.conversion_rate > 0 ? `${metrics.conversion_rate}%` : 'N/A',
+      sub: 'Requires frontend analytics tracker',
     },
   ];
 
   const topProducts = useMemo(() => {
-    return [...products]
-      .sort((a, b) => (b.is_featured ? 1 : 0) - (a.is_featured ? 1 : 0) || b.price - a.price)
+    const validOrders = orders.filter(
+      (o) => o.status !== 'cancelled' && o.status !== 'refunded'
+    );
+    const salesMap = new Map<
+      string,
+      { key: string; name: string; units: number; revenue: number; image_url: string; category: string }
+    >();
+    for (const ord of validOrders) {
+      for (const item of ord.items) {
+        const prod = products.find((p) => p.id === item.product_id);
+        const key = item.product_id ? `p-${item.product_id}` : `name-${item.item_name}`;
+        const existing = salesMap.get(key) || {
+          key,
+          name: prod?.name || item.item_name,
+          units: 0,
+          revenue: 0,
+          image_url: prod?.image_url || '',
+          category: prod?.category || 'pack',
+        };
+        existing.units += item.quantity;
+        existing.revenue += item.line_total || item.unit_price * item.quantity;
+        salesMap.set(key, existing);
+      }
+    }
+    return Array.from(salesMap.values())
+      .sort((a, b) => b.revenue - a.revenue || b.units - a.units)
       .slice(0, 4);
-  }, [products]);
+  }, [orders, products]);
 
   const topPosts = useMemo(() => {
     return [...posts].sort((a, b) => b.views_count - a.views_count).slice(0, 4);
@@ -169,10 +236,10 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
     })
     .join(' ');
 
-  const trafficPolyline = chartPoints
+  const ordersPolyline = chartPoints
     .map((pt, idx) => {
       const x = padX + (chartPoints.length === 1 ? plotW / 2 : (idx / (chartPoints.length - 1)) * plotW);
-      const y = padY + plotH - (pt.traffic / maxTraffic) * plotH;
+      const y = padY + plotH - (pt.ordersCount / maxOrders) * plotH;
       return `${x},${y}`;
     })
     .join(' ');
@@ -190,39 +257,47 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onQuickCreate('product')}
-            className="h-8 px-3 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold inline-flex items-center gap-1.5 hover:opacity-90 whitespace-nowrap"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <Package className="w-3.5 h-3.5" />
-            <span>New Product</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onQuickCreate('post')}
-            className="h-8 px-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#1A1F2B] text-xs font-medium text-[#111315] dark:text-white inline-flex items-center gap-1.5 hover:bg-[#F3F4F6] dark:hover:bg-[#252A36] whitespace-nowrap"
-          >
-            <FileEdit className="w-3.5 h-3.5" />
-            <span>New Post</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onQuickCreate('page')}
-            className="h-8 px-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#1A1F2B] text-xs font-medium text-[#111315] dark:text-white inline-flex items-center gap-1.5 hover:bg-[#F3F4F6] dark:hover:bg-[#252A36] whitespace-nowrap"
-          >
-            <LayoutList className="w-3.5 h-3.5" />
-            <span>New Page</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onQuickCreate('coupon')}
-            className="h-8 px-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#1A1F2B] text-xs font-medium text-[#111315] dark:text-white inline-flex items-center gap-1.5 hover:bg-[#F3F4F6] dark:hover:bg-[#252A36] whitespace-nowrap"
-          >
-            <Tag className="w-3.5 h-3.5" />
-            <span>Create Coupon</span>
-          </button>
+          {canAccessAdminRoute(currentUser.role, 'products') && (
+            <button
+              type="button"
+              onClick={() => onQuickCreate('product')}
+              className="h-8 px-3 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold inline-flex items-center gap-1.5 hover:opacity-90 whitespace-nowrap"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <Package className="w-3.5 h-3.5" />
+              <span>New Product</span>
+            </button>
+          )}
+          {canAccessAdminRoute(currentUser.role, 'posts') && (
+            <button
+              type="button"
+              onClick={() => onQuickCreate('post')}
+              className="h-8 px-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#1A1F2B] text-xs font-medium text-[#111315] dark:text-white inline-flex items-center gap-1.5 hover:bg-[#F3F4F6] dark:hover:bg-[#252A36] whitespace-nowrap"
+            >
+              <FileEdit className="w-3.5 h-3.5" />
+              <span>New Post</span>
+            </button>
+          )}
+          {canAccessAdminRoute(currentUser.role, 'pages') && (
+            <button
+              type="button"
+              onClick={() => onQuickCreate('page')}
+              className="h-8 px-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#1A1F2B] text-xs font-medium text-[#111315] dark:text-white inline-flex items-center gap-1.5 hover:bg-[#F3F4F6] dark:hover:bg-[#252A36] whitespace-nowrap"
+            >
+              <LayoutList className="w-3.5 h-3.5" />
+              <span>New Page</span>
+            </button>
+          )}
+          {canAccessAdminRoute(currentUser.role, 'marketing') && (
+            <button
+              type="button"
+              onClick={() => onQuickCreate('coupon')}
+              className="h-8 px-3 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#1A1F2B] text-xs font-medium text-[#111315] dark:text-white inline-flex items-center gap-1.5 hover:bg-[#F3F4F6] dark:hover:bg-[#252A36] whitespace-nowrap"
+            >
+              <Tag className="w-3.5 h-3.5" />
+              <span>Create Coupon</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -239,9 +314,9 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
             <div className="text-xl font-bold text-[#111315] dark:text-white font-mono tabular-nums">
               {card.value}
             </div>
-            <div className="inline-flex items-center gap-1 text-[11px] font-medium text-[#16A34A] dark:text-[#4ADE80] font-mono tabular-nums">
-              <TrendingUp className="w-3 h-3" />
-              <span>{card.trend}</span>
+            <div className="inline-flex items-center gap-1 text-[11px] font-medium text-[#525866] dark:text-[#9CA3AF] truncate max-w-full">
+              <TrendingUp className="w-3 h-3 text-[#2563EB] shrink-0" />
+              <span className="truncate">{card.sub}</span>
             </div>
           </div>
         ))}
@@ -249,15 +324,15 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
 
       {/* Interactive Chart + Top Content */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        {/* Revenue vs Traffic Chart */}
+        {/* Revenue vs Orders Chart */}
         <div className="xl:col-span-7 p-5 rounded-xl border border-[#E4E6EB] dark:border-[#252A36] bg-white dark:bg-[#14171F] space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-bold text-[#111315] dark:text-white">
-                Revenue vs. Storefront Traffic
+                Revenue vs. Order Volume
               </h2>
               <p className="text-xs text-[#525866] dark:text-[#9CA3AF]">
-                Hover points to inspect BDT sales and session volume
+                Hover points to inspect live BDT revenue and completed order counts
               </p>
             </div>
             <div className="flex items-center gap-1 p-1 rounded-lg bg-[#F3F4F6] dark:bg-[#0E1117]">
@@ -300,13 +375,13 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
                 );
               })}
 
-              {/* Traffic dashed line */}
+              {/* Orders dashed line */}
               <polyline
                 fill="none"
                 stroke="#0EA5E9"
                 strokeWidth="2"
                 strokeDasharray="5 4"
-                points={trafficPolyline}
+                points={ordersPolyline}
               />
 
               {/* Revenue solid line */}
@@ -322,7 +397,7 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
                 const x =
                   padX + (chartPoints.length === 1 ? plotW / 2 : (idx / (chartPoints.length - 1)) * plotW);
                 const yRev = padY + plotH - (pt.revenue / maxRev) * plotH;
-                const yTraf = padY + plotH - (pt.traffic / maxTraffic) * plotH;
+                const yOrd = padY + plotH - (pt.ordersCount / maxOrders) * plotH;
                 const active = hoveredIdx === idx;
                 return (
                   <g
@@ -342,7 +417,7 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
                     />
                     <circle
                       cx={x}
-                      cy={yTraf}
+                      cy={yOrd}
                       r={active ? 5 : 3}
                       fill="#0EA5E9"
                       stroke="#FFFFFF"
@@ -369,14 +444,14 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
                 </span>
                 <span className="inline-flex items-center gap-1.5">
                   <span className="w-3 h-0.5 border-t-2 border-dashed border-[#0EA5E9] inline-block" />
-                  <span>Visits</span>
+                  <span>Orders</span>
                 </span>
               </div>
 
               {hoveredIdx !== null && chartPoints[hoveredIdx] && (
                 <div className="font-mono tabular-nums text-[#111315] dark:text-white font-semibold">
                   {chartPoints[hoveredIdx].label}: {formatBDT(chartPoints[hoveredIdx].revenue)} ·{' '}
-                  {chartPoints[hoveredIdx].traffic.toLocaleString()} visits
+                  {chartPoints[hoveredIdx].ordersCount.toLocaleString()} orders
                 </div>
               )}
             </div>
@@ -390,39 +465,49 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
               <h3 className="text-xs font-bold uppercase tracking-wider text-[#525866] dark:text-[#9CA3AF]">
                 Top-Selling Products
               </h3>
-              <button
-                type="button"
-                onClick={() => navigate('products')}
-                className="text-xs font-medium text-[#2563EB] hover:underline inline-flex items-center gap-1"
-              >
-                <span>Catalog</span>
-                <ArrowUpRight className="w-3 h-3" />
-              </button>
+              {canAccessAdminRoute(currentUser.role, 'products') && (
+                <button
+                  type="button"
+                  onClick={() => navigate('products')}
+                  className="text-xs font-medium text-[#2563EB] hover:underline inline-flex items-center gap-1"
+                >
+                  <span>Catalog</span>
+                  <ArrowUpRight className="w-3 h-3" />
+                </button>
+              )}
             </div>
-            <div className="divide-y divide-[#E4E6EB] dark:divide-[#252A36]">
-              {topProducts.map((p) => (
-                <div key={p.id} className="py-2 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <SafeImage
-                      src={p.image_url}
-                      alt={p.name}
-                      className="w-8 h-8 rounded-md object-cover border border-[#E4E6EB] dark:border-[#2C3344] shrink-0"
-                    />
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-[#111315] dark:text-white truncate">
-                        {p.name}
-                      </div>
-                      <div className="text-[11px] text-[#6B7280] dark:text-[#9CA3AF]">
-                        {p.category} · {p.variants.length} SKUs
+            {topProducts.length === 0 ? (
+              <p className="text-xs text-[#6B7280] dark:text-[#9CA3AF] py-3">
+                No completed sales recorded yet.
+              </p>
+            ) : (
+              <div className="divide-y divide-[#E4E6EB] dark:divide-[#252A36]">
+                {topProducts.map((p) => (
+                  <div key={p.key} className="py-2 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {p.image_url && (
+                        <SafeImage
+                          src={p.image_url}
+                          alt={p.name}
+                          className="w-8 h-8 rounded-md object-cover border border-[#E4E6EB] dark:border-[#2C3344] shrink-0"
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-[#111315] dark:text-white truncate">
+                          {p.name}
+                        </div>
+                        <div className="text-[11px] text-[#6B7280] dark:text-[#9CA3AF]">
+                          {p.units} sold · {p.category}
+                        </div>
                       </div>
                     </div>
+                    <div className="text-xs font-mono font-semibold tabular-nums text-[#111315] dark:text-white shrink-0">
+                      {formatBDT(p.revenue)}
+                    </div>
                   </div>
-                  <div className="text-xs font-mono font-semibold tabular-nums text-[#111315] dark:text-white shrink-0">
-                    {formatBDT(p.price)}
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="p-4 rounded-xl border border-[#E4E6EB] dark:border-[#252A36] bg-white dark:bg-[#14171F] space-y-3">
@@ -430,14 +515,16 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
               <h3 className="text-xs font-bold uppercase tracking-wider text-[#525866] dark:text-[#9CA3AF]">
                 Most-Read Editorial Articles
               </h3>
-              <button
-                type="button"
-                onClick={() => navigate('posts')}
-                className="text-xs font-medium text-[#2563EB] hover:underline inline-flex items-center gap-1"
-              >
-                <span>Posts</span>
-                <ArrowUpRight className="w-3 h-3" />
-              </button>
+              {canAccessAdminRoute(currentUser.role, 'posts') && (
+                <button
+                  type="button"
+                  onClick={() => navigate('posts')}
+                  className="text-xs font-medium text-[#2563EB] hover:underline inline-flex items-center gap-1"
+                >
+                  <span>Posts</span>
+                  <ArrowUpRight className="w-3 h-3" />
+                </button>
+              )}
             </div>
             <div className="divide-y divide-[#E4E6EB] dark:divide-[#252A36]">
               {topPosts.map((post) => (
@@ -466,21 +553,26 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
         <div className="lg:col-span-6 p-5 rounded-xl border border-[#E4E6EB] dark:border-[#252A36] bg-white dark:bg-[#14171F] space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-bold text-[#111315] dark:text-white">Recent Orders</h2>
-            <button
-              type="button"
-              onClick={() => navigate('orders')}
-              className="text-xs font-medium text-[#2563EB] hover:underline"
-            >
-              Manage all orders →
-            </button>
+            {canAccessAdminRoute(currentUser.role, 'orders') && (
+              <button
+                type="button"
+                onClick={() => navigate('orders')}
+                className="text-xs font-medium text-[#2563EB] hover:underline"
+              >
+                Manage all orders →
+              </button>
+            )}
           </div>
           <div className="divide-y divide-[#E4E6EB] dark:divide-[#252A36]">
             {orders.slice(0, 5).map((ord) => (
               <button
                 key={ord.id}
                 type="button"
-                onClick={() => navigate('orders')}
-                className="w-full py-2.5 flex items-center justify-between gap-3 text-left hover:bg-[#F9FAFB] dark:hover:bg-[#191E29] px-1 rounded transition-colors"
+                disabled={!canAccessAdminRoute(currentUser.role, 'orders')}
+                onClick={() => {
+                  if (canAccessAdminRoute(currentUser.role, 'orders')) navigate('orders');
+                }}
+                className="w-full py-2.5 flex items-center justify-between gap-3 text-left hover:bg-[#F9FAFB] dark:hover:bg-[#191E29] px-1 rounded transition-colors disabled:cursor-default"
               >
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-[#111315] dark:text-white truncate">
@@ -510,13 +602,15 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
               <AlertTriangle className="w-4 h-4 text-[#D97706]" />
               <span>Low-Stock Alerts</span>
             </h2>
-            <button
-              type="button"
-              onClick={() => navigate('inventory')}
-              className="text-xs font-medium text-[#2563EB] hover:underline"
-            >
-              Adjust
-            </button>
+            {canAccessAdminRoute(currentUser.role, 'inventory') && (
+              <button
+                type="button"
+                onClick={() => navigate('inventory')}
+                className="text-xs font-medium text-[#2563EB] hover:underline"
+              >
+                Adjust
+              </button>
+            )}
           </div>
           {lowStockVariants.length === 0 ? (
             <p className="text-xs text-[#6B7280] dark:text-[#9CA3AF] py-4">
@@ -554,13 +648,15 @@ export function DashboardView({ ctx, onQuickCreate }: DashboardViewProps) {
               <MessageSquare className="w-4 h-4 text-[#2563EB]" />
               <span>Moderation Queue</span>
             </h2>
-            <button
-              type="button"
-              onClick={() => navigate('moderation')}
-              className="text-xs font-medium text-[#2563EB] hover:underline"
-            >
-              Open Hub
-            </button>
+            {canAccessAdminRoute(currentUser.role, 'moderation') && (
+              <button
+                type="button"
+                onClick={() => navigate('moderation')}
+                className="text-xs font-medium text-[#2563EB] hover:underline"
+              >
+                Open Hub
+              </button>
+            )}
           </div>
           <div className="space-y-2.5 text-xs">
             <div className="flex items-center justify-between py-1.5 border-b border-[#E4E6EB] dark:border-[#252A36]">

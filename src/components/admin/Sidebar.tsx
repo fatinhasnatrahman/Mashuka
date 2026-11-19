@@ -21,12 +21,13 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { AdminDashboardMetrics } from '../../types.ts';
-import type { AdminRoute } from './types.ts';
+import type { AdminDashboardMetrics, RbacRole } from '../../types.ts';
+import { canAccessAdminRoute, type AdminRoute } from './types.ts';
 import { SafeImage } from '../SafeImage.tsx';
 
 interface SidebarProps {
   activeRoute: AdminRoute;
+  userRole: RbacRole;
   onSelectRoute: (route: AdminRoute) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
@@ -47,6 +48,7 @@ interface NavItem {
 
 export function Sidebar({
   activeRoute,
+  userRole,
   onSelectRoute,
   collapsed,
   onToggleCollapse,
@@ -60,57 +62,64 @@ export function Sidebar({
   const moderationCount =
     metrics.pending_reviews_count + metrics.open_returns_count + metrics.unread_messages_count;
 
-  const sections: Array<{ title: string; items: NavItem[] }> = [
-    {
-      title: 'Overview',
-      items: [{ id: 'overview', label: 'Dashboard', icon: LayoutDashboard }],
-    },
-    {
-      title: 'E-Commerce',
-      items: [
-        { id: 'products', label: 'Products & Catalog', icon: Package },
-        {
-          id: 'inventory',
-          label: 'Inventory Control',
-          icon: Boxes,
-          badge: metrics.low_stock_variants_count || undefined,
-        },
-        {
-          id: 'orders',
-          label: 'Orders',
-          icon: ShoppingCart,
-          badge: metrics.active_orders_count || undefined,
-        },
-        { id: 'customers', label: 'Customers CRM', icon: Users },
-        { id: 'marketing', label: 'Marketing & Hero', icon: Megaphone },
-        { id: 'store-config', label: 'Store Config', icon: Store },
-      ],
-    },
-    {
-      title: 'Content CMS',
-      items: [
-        { id: 'posts', label: 'Posts & Editorial', icon: FileEdit },
-        { id: 'pages', label: 'Pages & Menus', icon: LayoutList },
-        { id: 'media', label: 'Media Library', icon: ImageIcon },
-        { id: 'seo', label: 'SEO & Redirects', icon: Globe },
-        {
-          id: 'moderation',
-          label: 'Reviews & Care',
-          icon: MessageSquare,
-          badge: moderationCount || undefined,
-        },
-        { id: 'appearance', label: 'Appearance & Plugins', icon: Palette },
-      ],
-    },
-    {
-      title: 'Administration',
-      items: [
-        { id: 'users', label: 'Users & RBAC', icon: ShieldCheck },
-        { id: 'settings', label: 'Settings & SMTP', icon: Settings },
-        { id: 'audit', label: 'Audit & Export', icon: ClipboardList },
-      ],
-    },
-  ];
+  const sections: Array<{ title: string; items: NavItem[] }> = (
+    [
+      {
+        title: 'Overview',
+        items: [{ id: 'overview', label: 'Dashboard', icon: LayoutDashboard }],
+      },
+      {
+        title: 'E-Commerce',
+        items: [
+          { id: 'products', label: 'Products & Catalog', icon: Package },
+          {
+            id: 'inventory',
+            label: 'Inventory Control',
+            icon: Boxes,
+            badge: metrics.low_stock_variants_count || undefined,
+          },
+          {
+            id: 'orders',
+            label: 'Orders',
+            icon: ShoppingCart,
+            badge: metrics.active_orders_count || undefined,
+          },
+          { id: 'customers', label: 'Customers CRM', icon: Users },
+          { id: 'marketing', label: 'Marketing & Hero', icon: Megaphone },
+          { id: 'store-config', label: 'Store Config', icon: Store },
+        ],
+      },
+      {
+        title: 'Content CMS',
+        items: [
+          { id: 'posts', label: 'Posts & Editorial', icon: FileEdit },
+          { id: 'pages', label: 'Pages & Menus', icon: LayoutList },
+          { id: 'media', label: 'Media Library', icon: ImageIcon },
+          { id: 'seo', label: 'SEO & Redirects', icon: Globe },
+          {
+            id: 'moderation',
+            label: 'Reviews & Care',
+            icon: MessageSquare,
+            badge: moderationCount || undefined,
+          },
+          { id: 'appearance', label: 'Appearance & Plugins', icon: Palette },
+        ],
+      },
+      {
+        title: 'Administration',
+        items: [
+          { id: 'users', label: 'Users & RBAC', icon: ShieldCheck },
+          { id: 'settings', label: 'Settings & SMTP', icon: Settings },
+          { id: 'audit', label: 'Audit & Export', icon: ClipboardList },
+        ],
+      },
+    ] as Array<{ title: string; items: NavItem[] }>
+  )
+    .map((sec) => ({
+      ...sec,
+      items: sec.items.filter((item) => canAccessAdminRoute(userRole, item.id)),
+    }))
+    .filter((sec) => sec.items.length > 0);
 
   const renderNavContent = (isMobile: boolean) => (
     <div className="flex flex-col h-full bg-white dark:bg-[#14171F] border-r border-[#E4E6EB] dark:border-[#252A36] select-none">

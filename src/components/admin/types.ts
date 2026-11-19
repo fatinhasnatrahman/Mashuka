@@ -15,6 +15,7 @@ import type {
   Product,
   ProductReview,
   PromoCode,
+  RbacRole,
   RbacUser,
   ReturnRequest,
   SeoRedirect,
@@ -37,6 +38,26 @@ export type AdminRoute =
   | 'users'
   | 'settings'
   | 'audit';
+
+export function canAccessAdminRoute(role: RbacRole, route: AdminRoute): boolean {
+  if (role === 'Super Admin') return true;
+  const allowed: Record<Exclude<RbacRole, 'Super Admin'>, AdminRoute[]> = {
+    'Shop Manager': [
+      'overview',
+      'products',
+      'inventory',
+      'orders',
+      'customers',
+      'marketing',
+      'media',
+      'moderation',
+    ],
+    'Content Editor': ['overview', 'posts', 'pages', 'media', 'seo', 'moderation'],
+    Author: ['overview', 'posts', 'media'],
+    'Customer Support': ['overview', 'orders', 'customers', 'moderation'],
+  };
+  return allowed[role]?.includes(route) ?? false;
+}
 
 export interface AdminDashboardPayload {
   currentUser?: AdminSessionUser;

@@ -17,7 +17,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import type { AdminSessionUser } from '../../types.ts';
-import type { AdminDashboardPayload, AdminRoute } from './types.ts';
+import { canAccessAdminRoute, type AdminDashboardPayload, type AdminRoute } from './types.ts';
 
 interface HeaderProps {
   activeRoute: AdminRoute;
@@ -67,7 +67,7 @@ export function Header({
     data.currentUser || {
       id: null,
       name: 'Fatin Hasnat',
-      email: 'admin@mashuka.com',
+      email: 'fatinhasnatdjs@gmail.com',
       role: 'Super Admin',
     };
   const initials =
@@ -132,8 +132,8 @@ export function Header({
         });
       }
     }
-    return results.slice(0, 8);
-  }, [searchQuery, data]);
+    return results.filter((r) => canAccessAdminRoute(sessionUser.role, r.route)).slice(0, 8);
+  }, [searchQuery, data, sessionUser.role]);
 
   const notifications = useMemo(() => {
     const list: Array<{ id: string; text: string; detail: string; route: AdminRoute }> = [];
@@ -177,8 +177,8 @@ export function Header({
         route: 'moderation',
       });
     }
-    return list;
-  }, [data.metrics]);
+    return list.filter((n) => canAccessAdminRoute(sessionUser.role, n.route));
+  }, [data.metrics, sessionUser.role]);
 
   return (
     <header className="sticky top-0 z-30 h-14 px-4 lg:px-6 bg-white/95 dark:bg-[#14171F]/95 backdrop-blur-sm border-b border-[#E4E6EB] dark:border-[#252A36] flex items-center justify-between gap-4 no-print">
@@ -254,48 +254,59 @@ export function Header({
       {/* Right: Quick Action, Notifications, Theme Toggle, Profile */}
       <div className="flex items-center gap-2 shrink-0">
         {/* Quick Create */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => {
-              setQuickOpen((v) => !v);
-              setNotifOpen(false);
-              setProfileOpen(false);
-            }}
-            className="h-9 px-3 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold inline-flex items-center gap-1.5 hover:opacity-90 transition-opacity whitespace-nowrap"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Quick Create</span>
-            <ChevronDown className="w-3 h-3 opacity-80" />
-          </button>
+        {(
+          [
+            { key: 'product' as const, label: 'New Product', icon: Package, route: 'products' as AdminRoute },
+            { key: 'post' as const, label: 'New Blog Post', icon: FileEdit, route: 'posts' as AdminRoute },
+            { key: 'page' as const, label: 'New Web Page', icon: LayoutList, route: 'pages' as AdminRoute },
+            { key: 'coupon' as const, label: 'Create Coupon', icon: Tag, route: 'marketing' as AdminRoute },
+          ].filter((item) => canAccessAdminRoute(sessionUser.role, item.route))
+        ).length > 0 && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setQuickOpen((v) => !v);
+                setNotifOpen(false);
+                setProfileOpen(false);
+              }}
+              className="h-9 px-3 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold inline-flex items-center gap-1.5 hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Quick Create</span>
+              <ChevronDown className="w-3 h-3 opacity-80" />
+            </button>
 
-          {quickOpen && (
-            <div className="absolute right-0 mt-1.5 w-48 rounded-xl border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#14171F] shadow-xl py-1.5 z-40">
-              {[
-                { key: 'product' as const, label: 'New Product', icon: Package },
-                { key: 'post' as const, label: 'New Blog Post', icon: FileEdit },
-                { key: 'page' as const, label: 'New Web Page', icon: LayoutList },
-                { key: 'coupon' as const, label: 'Create Coupon', icon: Tag },
-              ].map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => {
-                      setQuickOpen(false);
-                      onQuickCreate(item.key);
-                    }}
-                    className="w-full px-3.5 py-2 text-left text-xs font-medium text-[#111315] dark:text-white hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430] flex items-center gap-2.5"
-                  >
-                    <Icon className="w-3.5 h-3.5 text-[#6B7280] dark:text-[#9CA3AF]" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+            {quickOpen && (
+              <div className="absolute right-0 mt-1.5 w-48 rounded-xl border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#14171F] shadow-xl py-1.5 z-40">
+                {[
+                  { key: 'product' as const, label: 'New Product', icon: Package, route: 'products' as AdminRoute },
+                  { key: 'post' as const, label: 'New Blog Post', icon: FileEdit, route: 'posts' as AdminRoute },
+                  { key: 'page' as const, label: 'New Web Page', icon: LayoutList, route: 'pages' as AdminRoute },
+                  { key: 'coupon' as const, label: 'Create Coupon', icon: Tag, route: 'marketing' as AdminRoute },
+                ]
+                  .filter((item) => canAccessAdminRoute(sessionUser.role, item.route))
+                  .map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => {
+                          setQuickOpen(false);
+                          onQuickCreate(item.key);
+                        }}
+                        className="w-full px-3.5 py-2 text-left text-xs font-medium text-[#111315] dark:text-white hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430] flex items-center gap-2.5"
+                      >
+                        <Icon className="w-3.5 h-3.5 text-[#6B7280] dark:text-[#9CA3AF]" />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Notifications */}
         <div className="relative">
@@ -393,28 +404,32 @@ export function Header({
                   {sessionUser.role} · {sessionUser.email}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setProfileOpen(false);
-                  onNavigate('settings');
-                }}
-                className="w-full px-3.5 py-2 text-left text-xs text-[#374151] dark:text-[#D1D5DB] hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430] flex items-center gap-2"
-              >
-                <KeyRound className="w-3.5 h-3.5" />
-                <span>Change Password</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setProfileOpen(false);
-                  onNavigate('users');
-                }}
-                className="w-full px-3.5 py-2 text-left text-xs text-[#374151] dark:text-[#D1D5DB] hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430] flex items-center gap-2"
-              >
-                <User className="w-3.5 h-3.5" />
-                <span>Team &amp; Permissions</span>
-              </button>
+              {canAccessAdminRoute(sessionUser.role, 'settings') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProfileOpen(false);
+                    onNavigate('settings');
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-xs text-[#374151] dark:text-[#D1D5DB] hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430] flex items-center gap-2"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Change Password</span>
+                </button>
+              )}
+              {canAccessAdminRoute(sessionUser.role, 'users') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProfileOpen(false);
+                    onNavigate('users');
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-xs text-[#374151] dark:text-[#D1D5DB] hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430] flex items-center gap-2"
+                >
+                  <User className="w-3.5 h-3.5" />
+                  <span>Team &amp; Permissions</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

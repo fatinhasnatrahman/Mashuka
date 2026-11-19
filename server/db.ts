@@ -494,6 +494,15 @@ export function initDatabase(): void {
   addColumnIfMissing('cms_pages', 'focus_keyword', `TEXT NOT NULL DEFAULT ''`);
   addColumnIfMissing('reviews', 'status', `TEXT NOT NULL DEFAULT 'approved'`);
   addColumnIfMissing('rbac_users', 'password_hash', `TEXT`);
+  addColumnIfMissing('api_keys', 'key_hash', `TEXT`);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_orders_created_status ON orders(created_at, status);
+    CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(customer_phone);
+    CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+    CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants(product_id);
+    CREATE INDEX IF NOT EXISTS idx_reviews_approved ON reviews(is_approved);
+  `);
 
   const existingCms = db.prepare(`SELECT value FROM cms_settings WHERE key = 'public_cms'`).get() as
     | { value: string }
@@ -519,9 +528,10 @@ export function initDatabase(): void {
     | { value: string }
     | undefined;
   if (!existingAuth) {
+    const initialPassword = process.env.ADMIN_INITIAL_PASSWORD?.trim() || 'admin123';
     db.prepare(`INSERT INTO cms_settings (key, value) VALUES (?, ?)`).run(
       'admin_password_hash',
-      hashPassword('admin123')
+      hashPassword(initialPassword)
     );
   }
 
@@ -791,6 +801,321 @@ function seedEnterpriseCmsIfNeeded(): void {
     db.prepare(`INSERT OR IGNORE INTO customer_tags (phone, tags) VALUES (?, ?)`).run('01712345678', JSON.stringify(['VIP', 'Subscriber']));
     db.prepare(`INSERT OR IGNORE INTO customer_tags (phone, tags) VALUES (?, ?)`).run('01819876543', JSON.stringify(['Repeat Buyer']));
   }
+
+  // Seed Starter Products & Variants when catalog is empty
+  const prodCount = (db.prepare(`SELECT COUNT(*) as cnt FROM products`).get() as { cnt: number }).cnt;
+  if (prodCount === 0) {
+    const insertProduct = db.prepare(`
+      INSERT INTO products (
+        slug, name, product_type, status, category, audience, display_pages, sort_order,
+        short_description, fabric_specs, price, compare_at_price, cost_price, sale_start, sale_end,
+        tags, gallery_urls, image_url, is_featured, is_bundle, bundle_pairs, is_pack_eligible, is_active,
+        focus_keyword, seo_title, seo_description, created_at
+      ) VALUES (?, ?, 'variable', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+    `);
+    const insertVariant = db.prepare(`
+      INSERT INTO product_variants (product_id, sku, color_name, color_hex, size, material, price_override, stock, image_url)
+      VALUES (?, ?, ?, ?, ?, 'Combed Cotton', NULL, ?, ?)
+    `);
+
+    const starterProducts = [
+      {
+        slug: 'signature-ribbed-crew-socks',
+        name: 'Signature Ribbed Crew Socks',
+        category: 'crew',
+        audience: 'men',
+        display_pages: ['home', 'men', 'socks'],
+        sort_order: 1,
+        short_description: 'Fine-ribbed mid-calf crew built with breathable 82% combed cotton and hand-linked seamless toe.',
+        fabric_specs: '82% Long-Staple Combed Cotton · 15% Polyamide · 3% Lycra Spandex',
+        price: 290,
+        compare_at_price: 350,
+        cost_price: 135,
+        tags: ['crew', 'everyday', 'bestseller'],
+        image_url: '/src/assets/images/sock_crew_ribbed_1795008504482.jpg',
+        is_featured: 1,
+        is_bundle: 0,
+        bundle_pairs: 1,
+        is_pack_eligible: 1,
+        focus_keyword: 'ribbed crew socks',
+        variants: [
+          { sku: 'MSH-CRW-BLK-R', color_name: 'Jet Black', color_hex: '#141416', size: 'UK 6-9', stock: 42 },
+          { sku: 'MSH-CRW-CHR-R', color_name: 'Charcoal Marl', color_hex: '#3E424B', size: 'UK 6-9', stock: 28 },
+          { sku: 'MSH-CRW-NVY-L', color_name: 'Deep Navy', color_hex: '#0D1B54', size: 'UK 9-12', stock: 24 },
+        ],
+      },
+      {
+        slug: 'breathable-everyday-ankle-socks',
+        name: 'Breathable Everyday Ankle Socks',
+        category: 'ankle',
+        audience: 'women',
+        display_pages: ['home', 'women', 'socks'],
+        sort_order: 2,
+        short_description: 'Clean low-ankle cut with cushioned heel tab to prevent shoe bite during warm commutes.',
+        fabric_specs: '80% Combed Cotton · 17% Nylon · 3% Elastane',
+        price: 250,
+        compare_at_price: 300,
+        cost_price: 115,
+        tags: ['ankle', 'women', 'breathable'],
+        image_url: '/src/assets/images/sock_ankle_everyday_1795008501503.jpg',
+        is_featured: 1,
+        is_bundle: 0,
+        bundle_pairs: 1,
+        is_pack_eligible: 1,
+        focus_keyword: 'everyday ankle socks',
+        variants: [
+          { sku: 'MSH-ANK-CRM-W', color_name: 'Warm Oatmeal', color_hex: '#E6DEC8', size: 'Women Free Size', stock: 36 },
+          { sku: 'MSH-ANK-BLK-W', color_name: 'Jet Black', color_hex: '#141416', size: 'Women Free Size', stock: 30 },
+        ],
+      },
+      {
+        slug: 'invisible-no-show-loafer-pair',
+        name: 'Invisible No-Show Loafer Pair',
+        category: 'no-show',
+        audience: 'unisex',
+        display_pages: ['home', 'men', 'women', 'socks'],
+        sort_order: 3,
+        short_description: 'True hidden profile for loafers and court sneakers with triple medical-grade silicone heel grips.',
+        fabric_specs: '78% Combed Cotton · 19% Polyamide · 3% Spandex + Silicone Grip',
+        price: 240,
+        compare_at_price: null,
+        cost_price: 110,
+        tags: ['no-show', 'loafer', 'anti-slip'],
+        image_url: '/src/assets/images/sock_noshow_invisible_1795008501930.jpg',
+        is_featured: 1,
+        is_bundle: 0,
+        bundle_pairs: 1,
+        is_pack_eligible: 1,
+        focus_keyword: 'invisible no-show socks',
+        variants: [
+          { sku: 'MSH-NSH-GRY-R', color_name: 'Heather Grey', color_hex: '#9CA3AF', size: 'UK 6-9', stock: 34 },
+          { sku: 'MSH-NSH-BLK-W', color_name: 'Jet Black', color_hex: '#141416', size: 'Women Free Size', stock: 26 },
+        ],
+      },
+      {
+        slug: 'cushioned-sports-performance-crew',
+        name: 'Cushioned Sports Performance Crew',
+        category: 'sports',
+        audience: 'unisex',
+        display_pages: ['home', 'men', 'women', 'socks'],
+        sort_order: 4,
+        short_description: 'Terry-loop sole cushioning, ventilated mesh instep, and arch compression for gym and running.',
+        fabric_specs: '82% Combed Cotton · 14% Nylon · 4% Lycra Recovery',
+        price: 340,
+        compare_at_price: 400,
+        cost_price: 155,
+        tags: ['sports', 'athletic', 'cushioned'],
+        image_url: '/src/assets/images/sock_sports_cushioned_1795008502796.jpg',
+        is_featured: 1,
+        is_bundle: 0,
+        bundle_pairs: 1,
+        is_pack_eligible: 1,
+        focus_keyword: 'cushioned sports socks',
+        variants: [
+          { sku: 'MSH-SPT-WHT-R', color_name: 'Athletic White', color_hex: '#F3F4F6', size: 'UK 6-9', stock: 29 },
+          { sku: 'MSH-SPT-NVY-L', color_name: 'Cobalt Navy', color_hex: '#1D4ED8', size: 'UK 9-12', stock: 20 },
+        ],
+      },
+      {
+        slug: 'soft-combed-cotton-kids-ankle',
+        name: 'Soft Combed Cotton Kids Ankle',
+        category: 'kids',
+        audience: 'kids-baby',
+        display_pages: ['home', 'kids-baby', 'socks'],
+        sort_order: 5,
+        short_description: 'Gentle zero-seam toe and non-constricting rib cuff crafted for sensitive baby and junior feet.',
+        fabric_specs: '85% Organic Combed Cotton · 12% Polyamide · 3% Elastane',
+        price: 220,
+        compare_at_price: 260,
+        cost_price: 98,
+        tags: ['kids', 'baby', 'soft'],
+        image_url: '/src/assets/images/sock_ankle_everyday_1795008501503.jpg',
+        is_featured: 0,
+        is_bundle: 0,
+        bundle_pairs: 1,
+        is_pack_eligible: 1,
+        focus_keyword: 'kids cotton socks',
+        variants: [
+          { sku: 'MSH-KID-OAT-S', color_name: 'Warm Ivory', color_hex: '#F5EFE6', size: 'Kids M (2-5Y)', stock: 25 },
+          { sku: 'MSH-KID-NVY-L', color_name: 'Sky Navy', color_hex: '#1E3A8A', size: 'Junior L (6-12Y)', stock: 22 },
+        ],
+      },
+      {
+        slug: 'everyday-essentials-4-pair-box',
+        name: '4-Pair Everyday Essentials Gift Box',
+        category: 'bundle',
+        audience: 'unisex',
+        display_pages: ['home', 'men', 'women', 'socks'],
+        sort_order: 6,
+        short_description: 'Four curated combed-cotton crew pairs packaged in a rigid matte presentation box.',
+        fabric_specs: '4 Pairs · 82% Combed Cotton · Matte Gift Box Included',
+        price: 980,
+        compare_at_price: 1160,
+        cost_price: 460,
+        tags: ['bundle', 'gift-box', 'value'],
+        image_url: '/src/assets/images/sock_bundle_box_1795008503521.jpg',
+        is_featured: 1,
+        is_bundle: 1,
+        bundle_pairs: 4,
+        is_pack_eligible: 0,
+        focus_keyword: '4 pair sock gift box',
+        variants: [
+          { sku: 'MSH-BOX-CORE-R', color_name: 'Core Assorted', color_hex: '#111315', size: 'UK 6-9', stock: 18 },
+          { sku: 'MSH-BOX-CORE-L', color_name: 'Core Assorted', color_hex: '#111315', size: 'UK 9-12', stock: 14 },
+        ],
+      },
+    ];
+
+    const createdProdIds: number[] = [];
+    for (const sp of starterProducts) {
+      const res = insertProduct.run(
+        sp.slug,
+        sp.name,
+        sp.category,
+        sp.audience,
+        JSON.stringify(sp.display_pages),
+        sp.sort_order,
+        sp.short_description,
+        sp.fabric_specs,
+        sp.price,
+        sp.compare_at_price,
+        sp.cost_price,
+        JSON.stringify(sp.tags),
+        JSON.stringify([sp.image_url]),
+        sp.image_url,
+        sp.is_featured,
+        sp.is_bundle,
+        sp.bundle_pairs,
+        sp.is_pack_eligible,
+        sp.focus_keyword,
+        `${sp.name} | Mashuka`,
+        sp.short_description,
+        now
+      );
+      const pid = Number(res.lastInsertRowid);
+      createdProdIds.push(pid);
+      for (const v of sp.variants) {
+        insertVariant.run(pid, v.sku, v.color_name, v.color_hex, v.size, v.stock, sp.image_url);
+      }
+    }
+
+    const revCount = (db.prepare(`SELECT COUNT(*) as cnt FROM reviews`).get() as { cnt: number }).cnt;
+    if (revCount === 0 && createdProdIds.length >= 3) {
+      const insertReview = db.prepare(`
+        INSERT INTO reviews (product_id, product_name, reviewer_name, reviewer_city, rating, title, comment, status, is_approved, admin_reply, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)
+      `);
+      insertReview.run(
+        createdProdIds[0],
+        'Signature Ribbed Crew Socks',
+        'Tanvir Ahmed',
+        'Dhaka',
+        5,
+        'Holds shape after dozens of washes',
+        'Breathable all day in Dhaka traffic and the ribbed cuff never slides down.',
+        'Thank you Tanvir! Enjoy your Mashuka pairs.',
+        now
+      );
+      insertReview.run(
+        createdProdIds[1],
+        'Breathable Everyday Ankle Socks',
+        'Farhana Rahman',
+        'Chattogram',
+        5,
+        'Soft seam and zero heel rub',
+        'Wore these on a 10-hour workday with sneakers and my feet stayed cool and comfortable.',
+        null,
+        now
+      );
+      insertReview.run(
+        createdProdIds[5] ?? createdProdIds[0],
+        '4-Pair Everyday Essentials Gift Box',
+        'Mahmudul Hasan',
+        'Sylhet',
+        5,
+        'Clean packaging for gifting',
+        'Ordered the 4-pair box for my brother. Great yarn weight and neat presentation.',
+        null,
+        now
+      );
+    }
+  }
+
+  // Seed Starter CMS Pages referenced by footer menu
+  const pageCount = (db.prepare(`SELECT COUNT(*) as cnt FROM cms_pages`).get() as { cnt: number }).cnt;
+  if (pageCount === 0) {
+    const insertPage = db.prepare(`
+      INSERT INTO cms_pages (
+        title, slug, excerpt, content, template, menu_location, show_products,
+        focus_keyword, seo_title, seo_description, is_published, sort_order, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'footer', 0, ?, ?, ?, 1, ?, ?)
+    `);
+    const starterPages = [
+      {
+        title: 'About Us',
+        slug: 'about-us',
+        excerpt: 'Mashuka crafts breathable, long-staple combed cotton socks designed for Bangladesh weather and everyday commutes.',
+        content: `## Crafted for Everyday Comfort\n\nMashuka (Desire your Wear) blends 82% long-staple combed cotton with Lycra recovery spandex so every crew, ankle, no-show, and athletic pair breathes through humid commutes without losing tension.\n\n### Our Standards\n\n- **200-Needle Precision:** Finer stitch density and clean ribbed texture.\n- **Hand-Linked Seamless Toe:** Smooth finish inside formal shoes and sneakers.\n- **Bangladesh-Wide Delivery:** Reliable doorstep dispatch inside and outside Dhaka.`,
+        template: 'standard',
+        sort_order: 1,
+      },
+      {
+        title: 'Contact Us',
+        slug: 'contact-us',
+        excerpt: 'Reach our Dhaka support desk via WhatsApp, email, or the inquiry form below.',
+        content: `## We Are Here to Help\n\nHave questions about sizing, wholesale/corporate gift boxes, or an active order? Send us a message below and our support team will reply within business hours.`,
+        template: 'contact',
+        sort_order: 2,
+      },
+      {
+        title: 'Privacy Policy',
+        slug: 'privacy-policy',
+        excerpt: 'How Mashuka collects and safeguards your delivery contact details.',
+        content: `## Privacy Commitment\n\nWe collect only the name, phone number, city, and delivery address needed to dispatch your Mashuka order and verify bKash/Nagad payments.\n\nWe never sell or rent customer phone numbers or order history to third parties.`,
+        template: 'standard',
+        sort_order: 3,
+      },
+      {
+        title: 'Terms & Conditions',
+        slug: 'terms-and-conditions',
+        excerpt: 'Order confirmation, shipping fees, promo eligibility, and payment terms.',
+        content: `## Store Terms\n\n- **Pricing & Currency:** All prices are listed in Bangladeshi Taka (৳ / BDT).\n- **Delivery Timelines:** Standard dispatch takes 24–48 hours inside Dhaka and 2–4 business days outside Dhaka.\n- **Promotions:** Single promo codes apply per order and may require a minimum subtotal.`,
+        template: 'standard',
+        sort_order: 4,
+      },
+      {
+        title: 'Return & Refund Policy',
+        slug: 'return-refund-policy',
+        excerpt: '7-day exchange or refund on unworn pairs with original tags intact.',
+        content: `## Easy 7-Day Returns & Size Exchanges\n\nUnworn, unwashed Mashuka pairs in original packaging can be exchanged or refunded within 7 days of delivery.\n\nUse the **Track Order** or **Return & Exchange** form in our store navigation with your order number (e.g. MSH-1001) to start a request.`,
+        template: 'standard',
+        sort_order: 5,
+      },
+    ];
+    for (const pg of starterPages) {
+      insertPage.run(
+        pg.title,
+        pg.slug,
+        pg.excerpt,
+        pg.content,
+        pg.template,
+        pg.title.toLowerCase(),
+        `${pg.title} | Mashuka`,
+        pg.excerpt,
+        pg.sort_order,
+        now
+      );
+    }
+  }
+
+  // Seed Starter Promo Code
+  const promoCount = (db.prepare(`SELECT COUNT(*) as cnt FROM promo_codes`).get() as { cnt: number }).cnt;
+  if (promoCount === 0) {
+    db.prepare(
+      `INSERT INTO promo_codes (code, discount_type, discount_value, min_subtotal, usage_limit, expires_at, is_active, usage_count, created_at)
+       VALUES (?, ?, ?, ?, NULL, NULL, 1, 0, ?)`
+    ).run('WELCOME10', 'percent', 10, 500, now);
+  }
 }
 
 export function logAudit(actorName: string, actorRole: string, action: string, target: string, details: string): void {
@@ -829,11 +1154,23 @@ export function updateCmsSettings(next: CmsSettings): CmsSettings {
   return sanitized;
 }
 
+export function getOrCreateSessionSecret(): string {
+  const row = db.prepare(`SELECT value FROM cms_settings WHERE key = 'session_secret'`).get() as
+    | { value: string }
+    | undefined;
+  if (row?.value && row.value.length >= 32) {
+    return row.value;
+  }
+  const secret = crypto.randomBytes(32).toString('hex');
+  db.prepare(`INSERT OR REPLACE INTO cms_settings (key, value) VALUES ('session_secret', ?)`).run(secret);
+  return secret;
+}
+
 export function getAdminPasswordHash(): string {
   const row = db.prepare(`SELECT value FROM cms_settings WHERE key = 'admin_password_hash'`).get() as
     | { value: string }
     | undefined;
-  return row?.value ?? hashPassword('admin123');
+  return row?.value ?? hashPassword(process.env.ADMIN_INITIAL_PASSWORD?.trim() || 'admin123');
 }
 
 export function setAdminPassword(newPassword: string, userId?: number | null): void {
@@ -973,7 +1310,7 @@ interface RawProductRow {
   created_at: string;
 }
 
-export function getProducts(includeInactive = false): Product[] {
+export function getProducts(includeInactive = false, includeCost = true): Product[] {
   const products = (
     includeInactive
       ? db.prepare(`SELECT * FROM products ORDER BY sort_order ASC, is_featured DESC, id DESC`).all()
@@ -1013,7 +1350,7 @@ export function getProducts(includeInactive = false): Product[] {
       fabric_specs: p.fabric_specs,
       price: p.price,
       compare_at_price: p.compare_at_price,
-      cost_price: p.cost_price ?? Math.round(p.price * 0.48),
+      cost_price: includeCost ? (p.cost_price ?? null) : null,
       sale_start: p.sale_start,
       sale_end: p.sale_end,
       tags: parseJsonArray(p.tags, []),
@@ -1088,10 +1425,18 @@ interface RawPostRow {
 }
 
 export function getBlogPosts(includeUnpublished = false): BlogPost[] {
+  const nowIso = new Date().toISOString();
   const rows = (
     includeUnpublished
       ? db.prepare(`SELECT * FROM blog_posts ORDER BY id DESC`).all()
-      : db.prepare(`SELECT * FROM blog_posts WHERE status = 'published' ORDER BY id DESC`).all()
+      : db
+          .prepare(
+            `SELECT * FROM blog_posts
+             WHERE status = 'published'
+                OR (status = 'scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= ?)
+             ORDER BY id DESC`
+          )
+          .all(nowIso)
   ) as RawPostRow[];
 
   return rows.map((r) => {

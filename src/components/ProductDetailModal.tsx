@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { X, Check, Minus, Plus, ShieldCheck } from 'lucide-react';
 import type { Product, ProductVariant } from '../types.ts';
-import { formatBDT } from '../utils/format.ts';
+import { formatBDT, isProductSaleActive } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 interface ProductDetailModalProps {
@@ -9,6 +9,7 @@ interface ProductDetailModalProps {
   initialVariantId?: number;
   onClose: () => void;
   onAddToBag: (product: Product, variant: ProductVariant, quantity: number) => void;
+  onViewFullPage?: (slug: string) => void;
 }
 
 export function ProductDetailModal({
@@ -16,7 +17,16 @@ export function ProductDetailModal({
   initialVariantId,
   onClose,
   onAddToBag,
+  onViewFullPage,
 }: ProductDetailModalProps) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   const defaultVariant =
     product.variants.find((v) => v.id === initialVariantId) ||
     product.variants.find((v) => v.stock > 0) ||
@@ -132,9 +142,9 @@ export function ProductDetailModal({
                 <span className="text-xl font-semibold text-[#111315] font-mono tabular-nums">
                   {formatBDT(unitPrice)}
                 </span>
-                {product.compare_at_price && product.compare_at_price > unitPrice && (
+                {isProductSaleActive(product, unitPrice) && (
                   <span className="text-sm text-[#6B7280] line-through font-mono tabular-nums">
-                    {formatBDT(product.compare_at_price)}
+                    {formatBDT(product.compare_at_price!)}
                   </span>
                 )}
               </div>
@@ -269,9 +279,23 @@ export function ProductDetailModal({
                   : `Add to Bag · ${formatBDT(unitPrice * quantity)}`}
               </button>
             </div>
-            <div className="flex items-center gap-2 text-xs text-[#525866]">
-              <ShieldCheck className="w-4 h-4 text-[#16A34A] shrink-0" />
-              <span>Cash on Delivery &amp; bKash/Nagad across Bangladesh</span>
+            <div className="flex items-center justify-between gap-2 text-xs text-[#525866]">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#16A34A] shrink-0" />
+                <span>Cash on Delivery &amp; bKash/Nagad across Bangladesh</span>
+              </div>
+              {onViewFullPage && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onViewFullPage(product.slug);
+                  }}
+                  className="font-medium text-[#1D4ED8] hover:underline whitespace-nowrap"
+                >
+                  Full Product Page →
+                </button>
+              )}
             </div>
           </div>
         </div>

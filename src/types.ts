@@ -217,6 +217,12 @@ export interface CmsPlugin {
   config: Record<string, string | number | boolean>;
 }
 
+export interface PublicPlugin {
+  id: string;
+  is_enabled: boolean;
+  config: Record<string, string | number | boolean>;
+}
+
 export type RbacRole = 'Super Admin' | 'Shop Manager' | 'Content Editor' | 'Author' | 'Customer Support';
 
 export interface RbacUser {

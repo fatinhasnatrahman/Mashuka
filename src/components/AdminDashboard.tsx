@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Lock } from 'lucide-react';
 import type { AdminSessionUser } from '../types.ts';
-import type { AdminContextHelpers, AdminDashboardPayload, AdminRoute, ToastItem } from './admin/types.ts';
+import {
+  canAccessAdminRoute,
+  type AdminContextHelpers,
+  type AdminDashboardPayload,
+  type AdminRoute,
+  type ToastItem,
+} from './admin/types.ts';
 import { Sidebar } from './admin/Sidebar.tsx';
 import { Header } from './admin/Header.tsx';
 import { ToastContainer } from './admin/ui/Modal.tsx';
@@ -42,7 +48,7 @@ export function AdminDashboard({ onBackToStore, onStoreDataChanged }: AdminDashb
   const [currentUser, setCurrentUser] = useState<AdminSessionUser>({
     id: null,
     name: 'Fatin Hasnat',
-    email: 'admin@mashuka.com',
+    email: 'fatinhasnatdjs@gmail.com',
     role: 'Super Admin',
   });
   const [loginEmail, setLoginEmail] = useState('');
@@ -232,7 +238,7 @@ export function AdminDashboard({ onBackToStore, onStoreDataChanged }: AdminDashb
                 type="email"
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="admin@mashuka.com"
+                placeholder="fatinhasnatdjs@gmail.com"
                 className="w-full h-10 px-3 text-xs rounded-lg border border-[#E4E6EB] bg-[#F9FAFB] focus:outline-none focus:bg-white focus:border-[#2563EB]"
               />
             </label>
@@ -243,7 +249,7 @@ export function AdminDashboard({ onBackToStore, onStoreDataChanged }: AdminDashb
                 required
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="Default: admin123"
+                placeholder="Enter password"
                 className="w-full h-10 px-3 text-xs rounded-lg border border-[#E4E6EB] bg-[#F9FAFB] focus:outline-none focus:bg-white focus:border-[#2563EB]"
               />
             </label>
@@ -277,14 +283,23 @@ export function AdminDashboard({ onBackToStore, onStoreDataChanged }: AdminDashb
     );
   }
 
+  const effectiveUser = payload.currentUser || currentUser;
+  const effectiveRoute: AdminRoute = canAccessAdminRoute(effectiveUser.role, activeRoute)
+    ? activeRoute
+    : 'overview';
+
   const ctx: AdminContextHelpers = {
     data: payload,
-    currentUser: payload.currentUser || currentUser,
+    currentUser: effectiveUser,
     authHeaders,
     reload: loadDashboard,
     notifyStoreChanged: onStoreDataChanged,
     toast: pushToast,
     navigate: (route) => {
+      if (!canAccessAdminRoute(effectiveUser.role, route)) {
+        pushToast('Your role does not have access to this section.', 'error');
+        return;
+      }
       setQuickCreateIntent(null);
       setActiveRoute(route);
     },
@@ -293,8 +308,10 @@ export function AdminDashboard({ onBackToStore, onStoreDataChanged }: AdminDashb
   return (
     <div className="min-h-screen flex bg-[#F6F7F8] dark:bg-[#0B0D12] text-[#111315] dark:text-[#F3F4F6]">
       <Sidebar
-        activeRoute={activeRoute}
+        activeRoute={effectiveRoute}
+        userRole={effectiveUser.role}
         onSelectRoute={(r) => {
+          if (!canAccessAdminRoute(effectiveUser.role, r)) return;
           setQuickCreateIntent(null);
           setActiveRoute(r);
         }}
@@ -310,7 +327,7 @@ export function AdminDashboard({ onBackToStore, onStoreDataChanged }: AdminDashb
 
       <div className="flex-1 min-w-0 flex flex-col">
         <Header
-          activeRoute={activeRoute}
+          activeRoute={effectiveRoute}
           data={payload}
           currentUser={ctx.currentUser}
           darkMode={darkMode}
@@ -326,42 +343,42 @@ export function AdminDashboard({ onBackToStore, onStoreDataChanged }: AdminDashb
         />
 
         <main className="flex-1 p-4 lg:p-6 max-w-[1440px] w-full mx-auto">
-          {activeRoute === 'overview' && (
+          {effectiveRoute === 'overview' && (
             <DashboardView ctx={ctx} onQuickCreate={handleQuickCreate} />
           )}
-          {activeRoute === 'products' && (
+          {effectiveRoute === 'products' && (
             <ProductsView
               ctx={ctx}
               triggerCreate={quickCreateIntent === 'product'}
               onClearTrigger={() => setQuickCreateIntent(null)}
             />
           )}
-          {activeRoute === 'inventory' && <InventoryView ctx={ctx} />}
-          {activeRoute === 'orders' && <OrdersView ctx={ctx} />}
-          {activeRoute === 'customers' && <CustomersView ctx={ctx} />}
-          {activeRoute === 'marketing' && <MarketingView ctx={ctx} />}
-          {activeRoute === 'store-config' && <StoreConfigView ctx={ctx} />}
-          {activeRoute === 'posts' && (
+          {effectiveRoute === 'inventory' && <InventoryView ctx={ctx} />}
+          {effectiveRoute === 'orders' && <OrdersView ctx={ctx} />}
+          {effectiveRoute === 'customers' && <CustomersView ctx={ctx} />}
+          {effectiveRoute === 'marketing' && <MarketingView ctx={ctx} />}
+          {effectiveRoute === 'store-config' && <StoreConfigView ctx={ctx} />}
+          {effectiveRoute === 'posts' && (
             <PostsView
               ctx={ctx}
               triggerCreate={quickCreateIntent === 'post'}
               onClearTrigger={() => setQuickCreateIntent(null)}
             />
           )}
-          {activeRoute === 'pages' && (
+          {effectiveRoute === 'pages' && (
             <PagesAndMenusView
               ctx={ctx}
               triggerCreate={quickCreateIntent === 'page'}
               onClearTrigger={() => setQuickCreateIntent(null)}
             />
           )}
-          {activeRoute === 'media' && <MediaLibraryView ctx={ctx} />}
-          {activeRoute === 'seo' && <SeoAndRedirectsView ctx={ctx} />}
-          {activeRoute === 'moderation' && <ModerationHubView ctx={ctx} />}
-          {activeRoute === 'appearance' && <AppearanceAndPluginsView ctx={ctx} />}
-          {activeRoute === 'users' && <UsersRbacView ctx={ctx} />}
-          {activeRoute === 'settings' && <GeneralSettingsView ctx={ctx} />}
-          {activeRoute === 'audit' && <AuditAndExportView ctx={ctx} />}
+          {effectiveRoute === 'media' && <MediaLibraryView ctx={ctx} />}
+          {effectiveRoute === 'seo' && <SeoAndRedirectsView ctx={ctx} />}
+          {effectiveRoute === 'moderation' && <ModerationHubView ctx={ctx} />}
+          {effectiveRoute === 'appearance' && <AppearanceAndPluginsView ctx={ctx} />}
+          {effectiveRoute === 'users' && <UsersRbacView ctx={ctx} />}
+          {effectiveRoute === 'settings' && <GeneralSettingsView ctx={ctx} />}
+          {effectiveRoute === 'audit' && <AuditAndExportView ctx={ctx} />}
         </main>
       </div>
 

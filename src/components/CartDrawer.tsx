@@ -8,6 +8,7 @@ interface CartDrawerProps {
   open: boolean;
   items: CartItem[];
   cms: CmsSettings;
+  strictTrx?: boolean;
   onClose: () => void;
   onUpdateQty: (cartKey: string, delta: number) => void;
   onRemoveItem: (cartKey: string) => void;
@@ -19,6 +20,7 @@ export function CartDrawer({
   open,
   items,
   cms,
+  strictTrx = false,
   onClose,
   onUpdateQty,
   onRemoveItem,
@@ -30,6 +32,9 @@ export function CartDrawer({
   const [appliedPromo, setAppliedPromo] = useState<{
     code: string;
     discount: number;
+    discount_type?: 'percent' | 'fixed' | 'free_shipping';
+    discount_value?: number;
+    min_subtotal?: number;
     free_shipping?: boolean;
   } | null>(null);
   const [promoError, setPromoError] = useState('');
@@ -59,17 +64,46 @@ export function CartDrawer({
     }
   }, [cms.cod_enabled, cms.mobile_banking_enabled, paymentMethod]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (step === 'confirmed') {
+          setStep('bag');
+          setConfirmedOrder(null);
+        }
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, step, onClose]);
+
   if (!open) return null;
 
   const noPaymentMethods = !cms.cod_enabled && !cms.mobile_banking_enabled;
   const subtotal = items.reduce((sum, i) => sum + i.unit_price * i.quantity, 0);
-  const discountAmount = appliedPromo ? Math.min(subtotal, appliedPromo.discount) : 0;
+  const promoMinNotMet = Boolean(
+    appliedPromo?.min_subtotal && subtotal < appliedPromo.min_subtotal
+  );
+  const computedPromoDiscount = (() => {
+    if (!appliedPromo || promoMinNotMet) return 0;
+    if (appliedPromo.discount_type === 'free_shipping') return 0;
+    if (appliedPromo.discount_type === 'percent' && appliedPromo.discount_value !== undefined) {
+      return Math.round((subtotal * appliedPromo.discount_value) / 100);
+    }
+    if (appliedPromo.discount_type === 'fixed' && appliedPromo.discount_value !== undefined) {
+      return appliedPromo.discount_value;
+    }
+    return appliedPromo.discount;
+  })();
+  const discountAmount = Math.min(subtotal, Math.max(0, computedPromoDiscount));
   const afterDiscount = Math.max(0, subtotal - discountAmount);
   const taxAmount = cms.tax_rate_pct > 0 ? Math.round((afterDiscount * cms.tax_rate_pct) / 100) : 0;
   const baseShipping =
     deliveryZone === 'dhaka' ? cms.dhaka_shipping_fee : cms.outside_dhaka_shipping_fee;
   const qualifiesFreeShipping =
-    Boolean(appliedPromo?.free_shipping) ||
+    (Boolean(appliedPromo?.free_shipping) && !promoMinNotMet) ||
     (cms.free_shipping_threshold > 0 && afterDiscount >= cms.free_shipping_threshold);
   const shippingFee = items.length === 0 ? 0 : qualifiesFreeShipping ? 0 : baseShipping;
   const total = afterDiscount + taxAmount + shippingFee;
@@ -94,6 +128,9 @@ export function CartDrawer({
         setAppliedPromo({
           code: data.code,
           discount: data.discount_amount || 0,
+          discount_type: data.discount_type,
+          discount_value: data.discount_value,
+          min_subtotal: data.min_subtotal,
           free_shipping: Boolean(data.free_shipping),
         });
         setPromoError('');
@@ -120,7 +157,7 @@ export function CartDrawer({
         payment_method: paymentMethod,
         wallet_sender: paymentMethod === 'cod' ? undefined : walletSender,
         wallet_trx_id: paymentMethod === 'cod' ? undefined : walletTrxId,
-        promo_code: appliedPromo?.code,
+        promo_code: appliedPromo && !promoMinNotMet ? appliedPromo.code : undefined,
         items: items.map((item) =>
           item.type === 'custom_pack'
             ? {
@@ -403,13 +440,14 @@ export function CartDrawer({
 
               {/* Promo Code */}
               <div className="pt-2 border-t border-[#E4E6EB]">
-                <label className="block text-xs font-medium text-[#111315] mb-1.5">
+                <label htmlFor="promo-code-input" className="block text-xs font-medium text-[#111315] mb-1.5">
                   Promo Code
                 </label>
                 <div className="flex gap-2">
                   <div className="relative flex-1">
                     <Tag className="w-3.5 h-3.5 text-[#9CA3AF] absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
+                      id="promo-code-input"
                       type="text"
                       value={promoInput}
                       onChange={(e) => setPromoInput(e.target.value)}
@@ -428,12 +466,18 @@ export function CartDrawer({
                 </div>
                 {promoError && <p className="mt-1.5 text-xs text-[#DC2626]">{promoError}</p>}
                 {appliedPromo && (
-                  <div className="mt-1.5 flex items-center justify-between text-xs text-[#16A34A]">
+                  <div className={`mt-1.5 flex items-center justify-between text-xs ${promoMinNotMet ? 'text-[#D97706]' : 'text-[#16A34A]'}`}>
                     <span>
-                      Code <span className="font-mono font-semibold">{appliedPromo.code}</span> applied
-                      {appliedPromo.free_shipping
-                        ? ' (Free Shipping)'
-                        : ` (-${formatBDT(discountAmount)})`}
+                      {promoMinNotMet
+                        ? `Add ${formatBDT((appliedPromo.min_subtotal || 0) - subtotal)} more to qualify for ${appliedPromo.code}`
+                        : (
+                          <>
+                            Code <span className="font-mono font-semibold">{appliedPromo.code}</span> applied
+                            {appliedPromo.free_shipping
+                              ? ' (Free Shipping)'
+                              : ` (-${formatBDT(discountAmount)})`}
+                          </>
+                        )}
                     </span>
                     <button
                       type="button"
@@ -456,8 +500,11 @@ export function CartDrawer({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-[#111315] mb-1">Full Name</label>
+                  <label htmlFor="checkout-name" className="block text-xs font-medium text-[#111315] mb-1">
+                    Full Name
+                  </label>
                   <input
+                    id="checkout-name"
                     required
                     type="text"
                     value={customerName}
@@ -467,10 +514,11 @@ export function CartDrawer({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[#111315] mb-1">
+                  <label htmlFor="checkout-phone" className="block text-xs font-medium text-[#111315] mb-1">
                     Mobile Number
                   </label>
                   <input
+                    id="checkout-phone"
                     required
                     type="tel"
                     value={customerPhone}
@@ -526,8 +574,11 @@ export function CartDrawer({
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-[#111315] mb-1">District / City</label>
+                  <label htmlFor="checkout-city" className="block text-xs font-medium text-[#111315] mb-1">
+                    District / City
+                  </label>
                   <input
+                    id="checkout-city"
                     required
                     type="text"
                     value={city}
@@ -537,10 +588,11 @@ export function CartDrawer({
                   />
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="block text-xs font-medium text-[#111315] mb-1">
+                  <label htmlFor="checkout-address" className="block text-xs font-medium text-[#111315] mb-1">
                     Full Street Address
                   </label>
                   <input
+                    id="checkout-address"
                     required
                     type="text"
                     value={address}
@@ -552,10 +604,11 @@ export function CartDrawer({
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[#111315] mb-1">
+                <label htmlFor="checkout-notes" className="block text-xs font-medium text-[#111315] mb-1">
                   Delivery Note (Optional)
                 </label>
                 <input
+                  id="checkout-notes"
                   type="text"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
@@ -566,7 +619,7 @@ export function CartDrawer({
 
               {/* Payment Method */}
               <div className="pt-2 border-t border-[#E4E6EB] space-y-3">
-                <label className="block text-xs font-medium text-[#111315]">Payment Method</label>
+                <div className="block text-xs font-medium text-[#111315]">Payment Method</div>
                 {noPaymentMethods ? (
                   <div className="p-3 rounded-lg bg-[#FEF2F2] border border-[#FECACA] text-xs text-[#DC2626]">
                     Checkout is temporarily paused — enable COD or bKash/Nagad in Store Configuration.
@@ -612,10 +665,11 @@ export function CartDrawer({
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       <div>
-                        <label className="block text-[11px] font-medium text-[#111315] mb-1">
+                        <label htmlFor="checkout-wallet-sender" className="block text-[11px] font-medium text-[#111315] mb-1">
                           Sender Mobile Number
                         </label>
                         <input
+                          id="checkout-wallet-sender"
                           required
                           type="tel"
                           value={walletSender}
@@ -625,12 +679,15 @@ export function CartDrawer({
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] font-medium text-[#111315] mb-1">
-                          Transaction ID (TrxID)
+                        <label htmlFor="checkout-wallet-trx" className="block text-[11px] font-medium text-[#111315] mb-1">
+                          Transaction ID (TrxID){strictTrx ? ' · 10 chars' : ''}
                         </label>
                         <input
+                          id="checkout-wallet-trx"
                           required
                           type="text"
+                          minLength={strictTrx ? 10 : 4}
+                          maxLength={strictTrx ? 10 : undefined}
                           value={walletTrxId}
                           onChange={(e) => setWalletTrxId(e.target.value)}
                           placeholder="e.g. BKH9X4M2Q1"

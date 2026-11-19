@@ -278,19 +278,30 @@ export function PostsView({
                 <button
                   type="button"
                   onClick={() => openEditor(p)}
+                  aria-label="Edit post"
+                  title="Edit post"
                   className="p-1.5 rounded border border-[#E4E6EB] dark:border-[#2C3344]"
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </button>
                 <button
                   type="button"
+                  aria-label="Delete post"
+                  title="Delete post"
                   onClick={async () => {
-                    await fetch(`/api/admin/posts/${p.id}`, {
-                      method: 'DELETE',
-                      headers: authHeaders(),
-                    });
-                    toast('Post deleted.');
-                    await reload();
+                    try {
+                      const res = await fetch(`/api/admin/posts/${p.id}`, {
+                        method: 'DELETE',
+                        headers: authHeaders(),
+                      });
+                      const json = await res.json().catch(() => ({}));
+                      if (!res.ok) throw new Error(json.error || 'Failed to delete post');
+                      toast('Post deleted.');
+                      await reload();
+                      notifyStoreChanged();
+                    } catch (err) {
+                      toast(err instanceof Error ? err.message : 'Unable to delete post', 'error');
+                    }
                   }}
                   className="p-1.5 rounded border border-[#FECACA] text-[#DC2626]"
                 >
@@ -761,6 +772,7 @@ export function PagesAndMenusView({
                     href={`/page/${p.slug}`}
                     target="_blank"
                     rel="noopener noreferrer"
+                    aria-label="Preview live page"
                     title="Preview live page"
                     className="p-1.5 rounded border border-[#E4E6EB] dark:border-[#2C3344] text-[#525866] hover:text-[#111315] dark:text-[#9CA3AF]"
                   >
@@ -769,6 +781,7 @@ export function PagesAndMenusView({
                   <button
                     type="button"
                     onClick={() => openPageEditor(p)}
+                    aria-label="Edit page"
                     title="Edit page"
                     className="p-1.5 rounded border border-[#E4E6EB] dark:border-[#2C3344]"
                   >
@@ -776,14 +789,21 @@ export function PagesAndMenusView({
                   </button>
                   <button
                     type="button"
+                    aria-label="Delete page"
                     onClick={async () => {
-                      await fetch(`/api/admin/pages/${p.id}`, {
-                        method: 'DELETE',
-                        headers: authHeaders(),
-                      });
-                      toast('Page removed.');
-                      await reload();
-                      notifyStoreChanged();
+                      try {
+                        const res = await fetch(`/api/admin/pages/${p.id}`, {
+                          method: 'DELETE',
+                          headers: authHeaders(),
+                        });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(json.error || 'Failed to delete page');
+                        toast('Page removed.');
+                        await reload();
+                        notifyStoreChanged();
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : 'Unable to delete page', 'error');
+                      }
                     }}
                     title="Delete page"
                     className="p-1.5 rounded border border-[#FECACA] text-[#DC2626]"
@@ -944,6 +964,7 @@ export function PagesAndMenusView({
                     <button
                       type="button"
                       onClick={() => moveItem(idx, -1)}
+                      aria-label="Move menu item up"
                       className="p-1.5 rounded border border-[#E4E6EB] dark:border-[#2C3344]"
                       title="Move up"
                     >
@@ -952,6 +973,7 @@ export function PagesAndMenusView({
                     <button
                       type="button"
                       onClick={() => moveItem(idx, 1)}
+                      aria-label="Move menu item down"
                       className="p-1.5 rounded border border-[#E4E6EB] dark:border-[#2C3344]"
                       title="Move down"
                     >
@@ -986,6 +1008,8 @@ export function PagesAndMenusView({
                     </button>
                     <button
                       type="button"
+                      aria-label="Remove menu item"
+                      title="Remove menu item"
                       onClick={() => setMenuItems((prev) => prev.filter((_, i) => i !== idx))}
                       className="p-1.5 rounded border border-[#FECACA] text-[#DC2626]"
                     >
@@ -1038,6 +1062,8 @@ export function PagesAndMenusView({
                           />
                           <button
                             type="button"
+                            aria-label="Remove sub-item"
+                            title="Remove sub-item"
                             onClick={() =>
                               setMenuItems((prev) =>
                                 prev.map((m, i) =>
@@ -1424,13 +1450,19 @@ export function MediaLibraryView({ ctx }: { ctx: AdminContextHelpers }) {
                 <button
                   type="button"
                   onClick={async () => {
-                    await fetch(`/api/admin/media/${encodeURIComponent(selectedItem.name)}`, {
-                      method: 'DELETE',
-                      headers: authHeaders(),
-                    });
-                    setSelectedUrl(null);
-                    toast('Uploaded file deleted.');
-                    await reload();
+                    try {
+                      const res = await fetch(`/api/admin/media/${encodeURIComponent(selectedItem.name)}`, {
+                        method: 'DELETE',
+                        headers: authHeaders(),
+                      });
+                      const json = await res.json().catch(() => ({}));
+                      if (!res.ok) throw new Error(json.error || 'Failed to delete file');
+                      setSelectedUrl(null);
+                      toast('Uploaded file deleted.');
+                      await reload();
+                    } catch (err) {
+                      toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+                    }
                   }}
                   className="h-9 px-3 rounded-lg border border-[#FECACA] text-[#DC2626] text-xs font-medium mr-auto"
                 >
@@ -1440,18 +1472,24 @@ export function MediaLibraryView({ ctx }: { ctx: AdminContextHelpers }) {
               <button
                 type="button"
                 onClick={async () => {
-                  await fetch('/api/admin/media/meta', {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                    body: JSON.stringify({
-                      url: selectedItem.url,
-                      title: metaTitle,
-                      alt_text: metaAlt,
-                      caption: metaCaption,
-                    }),
-                  });
-                  toast('Asset SEO metadata updated.');
-                  await reload();
+                  try {
+                    const res = await fetch('/api/admin/media/meta', {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                      body: JSON.stringify({
+                        url: selectedItem.url,
+                        title: metaTitle,
+                        alt_text: metaAlt,
+                        caption: metaCaption,
+                      }),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(json.error || 'Failed to save metadata');
+                    toast('Asset SEO metadata updated.');
+                    await reload();
+                  } catch (err) {
+                    toast(err instanceof Error ? err.message : 'Save failed', 'error');
+                  }
                 }}
                 className="h-9 px-4 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold"
               >
@@ -1531,7 +1569,8 @@ export function MediaLibraryView({ ctx }: { ctx: AdminContextHelpers }) {
 // ==========================================
 
 export function SeoAndRedirectsView({ ctx }: { ctx: AdminContextHelpers }) {
-  const { data, authHeaders, reload, toast } = ctx;
+  const { data, currentUser, authHeaders, reload, notifyStoreChanged, toast } = ctx;
+  const canEditGlobalSeo = currentUser.role === 'Super Admin';
   const [sitemapEnabled, setSitemapEnabled] = useState(data.cms.sitemap_enabled);
   const [robotsTxt, setRobotsTxt] = useState(data.cms.robots_txt);
   const [fromPath, setFromPath] = useState('');
@@ -1544,34 +1583,48 @@ export function SeoAndRedirectsView({ ctx }: { ctx: AdminContextHelpers }) {
   }, [data.cms.sitemap_enabled, data.cms.robots_txt]);
 
   const handleSaveGlobalSeo = async () => {
-    const res = await fetch('/api/admin/cms', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({
-        cms: { ...data.cms, sitemap_enabled: sitemapEnabled, robots_txt: robotsTxt },
-      }),
-    });
-    if (res.ok) {
+    if (!canEditGlobalSeo) {
+      toast('Super Admin role required to update global indexing settings.', 'error');
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/cms', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          cms: { ...data.cms, sitemap_enabled: sitemapEnabled, robots_txt: robotsTxt },
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Failed to save indexing settings');
       toast('XML Sitemap and robots.txt saved.');
       await reload();
+      notifyStoreChanged();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Save failed', 'error');
     }
   };
 
   const handleAddRedirect = async () => {
-    const res = await fetch('/api/admin/redirects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ from_path: fromPath, to_path: toPath, status_code: statusCode }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      toast(json.error || 'Redirect error', 'error');
-      return;
+    try {
+      const res = await fetch('/api/admin/redirects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ from_path: fromPath, to_path: toPath, status_code: statusCode }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(json.error || 'Redirect error', 'error');
+        return;
+      }
+      setFromPath('');
+      setToPath('');
+      toast('URL Redirect rule created.');
+      await reload();
+      notifyStoreChanged();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Redirect error', 'error');
     }
-    setFromPath('');
-    setToPath('');
-    toast('URL Redirect rule created.');
-    await reload();
   };
 
   return (
@@ -1592,22 +1645,30 @@ export function SeoAndRedirectsView({ ctx }: { ctx: AdminContextHelpers }) {
             <label className="flex items-center gap-2 font-medium cursor-pointer">
               <input
                 type="checkbox"
+                disabled={!canEditGlobalSeo}
                 checked={sitemapEnabled}
                 onChange={(e) => setSitemapEnabled(e.target.checked)}
               />
               <span>Enable XML Sitemap</span>
             </label>
           </div>
+          {!canEditGlobalSeo && (
+            <div className="p-2.5 rounded-lg border border-[#FDE68A] bg-[#FEF3C7]/60 dark:border-[#78350F] dark:bg-[#451A03]/30 text-[11px] text-[#92400E] dark:text-[#FCD34D]">
+              Read-only: Super Admin permissions are required to update XML Sitemap and robots.txt.
+            </div>
+          )}
           <textarea
             rows={6}
+            disabled={!canEditGlobalSeo}
             value={robotsTxt}
             onChange={(e) => setRobotsTxt(e.target.value)}
-            className="w-full p-3 font-mono rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-[#F9FAFB] dark:bg-[#0E1117]"
+            className="w-full p-3 font-mono rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-[#F9FAFB] dark:bg-[#0E1117] disabled:opacity-60"
           />
           <button
             type="button"
+            disabled={!canEditGlobalSeo}
             onClick={handleSaveGlobalSeo}
-            className="h-9 px-4 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white font-semibold"
+            className="h-9 px-4 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white font-semibold disabled:opacity-50"
           >
             Save Indexing Settings
           </button>
@@ -1658,13 +1719,22 @@ export function SeoAndRedirectsView({ ctx }: { ctx: AdminContextHelpers }) {
                 </div>
                 <button
                   type="button"
+                  aria-label="Delete redirect rule"
+                  title="Delete redirect rule"
                   onClick={async () => {
-                    await fetch(`/api/admin/redirects/${r.id}`, {
-                      method: 'DELETE',
-                      headers: authHeaders(),
-                    });
-                    toast('Redirect deleted.');
-                    await reload();
+                    try {
+                      const res = await fetch(`/api/admin/redirects/${r.id}`, {
+                        method: 'DELETE',
+                        headers: authHeaders(),
+                      });
+                      const json = await res.json().catch(() => ({}));
+                      if (!res.ok) throw new Error(json.error || 'Failed to delete redirect');
+                      toast('Redirect deleted.');
+                      await reload();
+                      notifyStoreChanged();
+                    } catch (err) {
+                      toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+                    }
                   }}
                   className="p-1.5 text-[#DC2626]"
                 >
@@ -1773,18 +1843,24 @@ export function ModerationHubView({ ctx }: { ctx: AdminContextHelpers }) {
                     key={st}
                     type="button"
                     onClick={async () => {
-                      await fetch(`/api/admin/reviews/${rev.id}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                        body: JSON.stringify({
-                          status: st,
-                          is_approved: st === 'approved',
-                          admin_reply: replyDrafts[rev.id] ?? rev.admin_reply,
-                        }),
-                      });
-                      toast(`Review marked ${st}.`);
-                      await reload();
-                      notifyStoreChanged();
+                      try {
+                        const res = await fetch(`/api/admin/reviews/${rev.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                          body: JSON.stringify({
+                            status: st,
+                            is_approved: st === 'approved',
+                            admin_reply: replyDrafts[rev.id] ?? rev.admin_reply,
+                          }),
+                        });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(json.error || 'Failed to update review');
+                        toast(`Review marked ${st}.`);
+                        await reload();
+                        notifyStoreChanged();
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : 'Update failed', 'error');
+                      }
                     }}
                     className="h-8 px-2.5 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] capitalize hover:bg-[#F3F4F6] dark:hover:bg-[#1F2430]"
                   >
@@ -1794,12 +1870,19 @@ export function ModerationHubView({ ctx }: { ctx: AdminContextHelpers }) {
                 <button
                   type="button"
                   onClick={async () => {
-                    await fetch(`/api/admin/reviews/${rev.id}`, {
-                      method: 'DELETE',
-                      headers: authHeaders(),
-                    });
-                    toast('Review permanently deleted.');
-                    await reload();
+                    try {
+                      const res = await fetch(`/api/admin/reviews/${rev.id}`, {
+                        method: 'DELETE',
+                        headers: authHeaders(),
+                      });
+                      const json = await res.json().catch(() => ({}));
+                      if (!res.ok) throw new Error(json.error || 'Failed to delete review');
+                      toast('Review permanently deleted.');
+                      await reload();
+                      notifyStoreChanged();
+                    } catch (err) {
+                      toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+                    }
                   }}
                   className="h-8 px-2.5 rounded-lg border border-[#FECACA] text-[#DC2626]"
                 >
@@ -1824,15 +1907,22 @@ export function ModerationHubView({ ctx }: { ctx: AdminContextHelpers }) {
                   {ret.customer_phone})
                 </div>
                 <select
+                  aria-label="Return request status"
                   value={ret.status}
                   onChange={async (e) => {
-                    await fetch(`/api/admin/returns/${ret.id}`, {
-                      method: 'PATCH',
-                      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                      body: JSON.stringify({ status: e.target.value as ReturnStatus }),
-                    });
-                    toast('Return status updated.');
-                    await reload();
+                    try {
+                      const res = await fetch(`/api/admin/returns/${ret.id}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                        body: JSON.stringify({ status: e.target.value as ReturnStatus }),
+                      });
+                      const json = await res.json().catch(() => ({}));
+                      if (!res.ok) throw new Error(json.error || 'Failed to update return request');
+                      toast('Return status updated.');
+                      await reload();
+                    } catch (err) {
+                      toast(err instanceof Error ? err.message : 'Update failed', 'error');
+                    }
                   }}
                   className="h-8 px-2.5 rounded-lg border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117]"
                 >
@@ -1872,14 +1962,22 @@ export function ModerationHubView({ ctx }: { ctx: AdminContextHelpers }) {
                     {msg.subject} — {msg.name} ({msg.phone || msg.email})
                   </div>
                   <select
+                    aria-label="Message status"
                     value={msg.status}
                     onChange={async (e) => {
-                      await fetch(`/api/admin/messages/${msg.id}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                        body: JSON.stringify({ status: e.target.value }),
-                      });
-                      await reload();
+                      try {
+                        const res = await fetch(`/api/admin/messages/${msg.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                          body: JSON.stringify({ status: e.target.value }),
+                        });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(json.error || 'Failed to update message status');
+                        toast('Message status updated.');
+                        await reload();
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : 'Update failed', 'error');
+                      }
                     }}
                     className="h-7 px-2 rounded border border-[#E4E6EB] dark:border-[#2C3344] bg-white dark:bg-[#0E1117]"
                   >
@@ -1916,15 +2014,19 @@ export function AppearanceAndPluginsView({ ctx }: { ctx: AdminContextHelpers }) 
   }, [data.cms]);
 
   const saveAppearance = async () => {
-    const res = await fetch('/api/admin/cms', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ cms: draft }),
-    });
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/admin/cms', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ cms: draft }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Failed to save appearance');
       toast('Brand appearance & typography updated.');
       await reload();
       notifyStoreChanged();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Save failed', 'error');
     }
   };
 
@@ -2132,13 +2234,20 @@ export function AppearanceAndPluginsView({ ctx }: { ctx: AdminContextHelpers }) 
                   <button
                     type="button"
                     onClick={async () => {
-                      await fetch(`/api/admin/plugins/${pl.id}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                        body: JSON.stringify({ is_enabled: !pl.is_enabled }),
-                      });
-                      toast(`${pl.name} ${!pl.is_enabled ? 'activated' : 'deactivated'}.`);
-                      await reload();
+                      try {
+                        const res = await fetch(`/api/admin/plugins/${pl.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                          body: JSON.stringify({ is_enabled: !pl.is_enabled }),
+                        });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(json.error || 'Failed to update plugin');
+                        toast(`${pl.name} ${!pl.is_enabled ? 'activated' : 'deactivated'}.`);
+                        await reload();
+                        notifyStoreChanged();
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : 'Update failed', 'error');
+                      }
                     }}
                     className={`px-2.5 py-1 rounded text-[11px] font-semibold ${
                       pl.is_enabled
@@ -2152,6 +2261,11 @@ export function AppearanceAndPluginsView({ ctx }: { ctx: AdminContextHelpers }) 
                 <p className="text-[#525866] dark:text-[#9CA3AF] leading-relaxed">
                   {pl.description}
                 </p>
+                {!['newsletter-popup', 'schema-jsonld', 'bkash-webhook'].includes(pl.id) && (
+                  <p className="text-[11px] text-[#6B7280] dark:text-[#9CA3AF] italic">
+                    Settings are stored cleanly; background scheduling requires an external worker.
+                  </p>
+                )}
               </div>
 
               <button
@@ -2188,14 +2302,21 @@ export function AppearanceAndPluginsView({ ctx }: { ctx: AdminContextHelpers }) 
               <button
                 type="button"
                 onClick={async () => {
-                  await fetch(`/api/admin/plugins/${editingPlugin.id}`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                    body: JSON.stringify({ config: pluginConfigDraft }),
-                  });
-                  toast(`${editingPlugin.name} settings saved.`);
-                  setEditingPlugin(null);
-                  await reload();
+                  try {
+                    const res = await fetch(`/api/admin/plugins/${editingPlugin.id}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                      body: JSON.stringify({ config: pluginConfigDraft }),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(json.error || 'Failed to save plugin config');
+                    toast(`${editingPlugin.name} settings saved.`);
+                    setEditingPlugin(null);
+                    await reload();
+                    notifyStoreChanged();
+                  } catch (err) {
+                    toast(err instanceof Error ? err.message : 'Save failed', 'error');
+                  }
                 }}
                 className="h-8 px-4 rounded-lg bg-[#111315] dark:bg-[#2563EB] text-white text-xs font-semibold"
               >

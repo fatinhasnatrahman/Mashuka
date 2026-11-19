@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 import type { ToastItem } from '../types.ts';
@@ -29,10 +30,23 @@ export function Modal({
   children,
   footer,
 }: ModalProps) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-[2px]">
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-[2px]"
+    >
       <div
         className={`w-full ${SIZE_CLASSES[size]} max-h-[90vh] flex flex-col rounded-xl bg-white dark:bg-[#14171F] border border-[#E4E6EB] dark:border-[#252A36] shadow-xl text-[#111315] dark:text-[#F3F4F6]`}
       >
@@ -90,10 +104,23 @@ export function SlideOverDrawer({
   children,
   footer,
 }: SlideOverDrawerProps) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/45 backdrop-blur-[1px]">
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex justify-end bg-black/45 backdrop-blur-[1px]"
+    >
       <div className="flex-1" onClick={onClose} aria-hidden="true" />
       <aside
         className={`w-full ${DRAWER_WIDTHS[width]} h-full flex flex-col bg-white dark:bg-[#14171F] border-l border-[#E4E6EB] dark:border-[#252A36] shadow-2xl text-[#111315] dark:text-[#F3F4F6]`}

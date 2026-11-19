@@ -1,5 +1,5 @@
 import type { Product, ProductVariant } from '../types.ts';
-import { formatBDT } from '../utils/format.ts';
+import { formatBDT, isProductSaleActive } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 interface ProductCardProps {
@@ -109,9 +109,9 @@ export function ProductCard({
               <span className="text-[15px] font-bold text-[#111315] font-mono tabular-nums">
                 {formatBDT(displayPrice)}
               </span>
-              {product.compare_at_price && product.compare_at_price > displayPrice && (
+              {isProductSaleActive(product, displayPrice) && (
                 <span className="text-xs text-[#9CA3AF] line-through font-mono tabular-nums">
-                  {formatBDT(product.compare_at_price)}
+                  {formatBDT(product.compare_at_price!)}
                 </span>
               )}
             </div>
